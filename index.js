@@ -10,11 +10,11 @@ const variables = require('./variables.json');
       if (err) console.log(err);
       else image.write(`./images/${variables.imageFileName}.png`);
     });
-    await delay(500);
+    await delay(1000);
   }
 
   await cobRes(fs.readFileSync(`./images/${variables.imageFileName}.png`), variables.asciiHeight, buffer => fs.writeFileSync(`./images/${variables.imageFileName}2.png`, buffer));
-  await delay(100);
+  await delay(500);
 
   await covertToASCII(fs.readFileSync(`./images/${variables.imageFileName}2.png`), variables.grayScaleBias, variables.darkOrLight);
 })();
@@ -46,21 +46,11 @@ function covertToASCII(iBuf, spaces, blackWhite) {
       console.log(rowStr);
     }
   });
-
-  function b2s(b) {
-    let str = new stream.Readable();
-    str.push(b);
-    str.push(null);
-    return str;
-  }
-
-  function mapRange(value, low1, high1, low2, high2) {
-    return low2 + (high2 - low2) * (value - low1) / (high1 - low1);
-  }
 }
 
 
 async function cobRes(iBuf, height, cb) {
+  console.log(iBuf)
   b2s(iBuf)
   .pipe(new PNG({
     filterType: -1
@@ -103,13 +93,7 @@ async function cobRes(iBuf, height, cb) {
     }
     return rez;
   }
-
-  function b2s(b) {
-    let str = new stream.Readable();
-    str.push(b);
-    str.push(null);
-    return str;
-  }
+  
   function sbuff(stream, cb) {
     let bufs = []
     let pk = stream;
@@ -121,6 +105,17 @@ async function cobRes(iBuf, height, cb) {
       cb(buff);
     });
   }
+}
+
+function b2s(b) {
+  let str = new stream.Readable();
+  str.push(b);
+  str.push(null);
+  return str;
+}
+
+function mapRange(value, low1, high1, low2, high2) {
+  return low2 + (high2 - low2) * (value - low1) / (high1 - low1);
 }
 
 function delay(time) {
