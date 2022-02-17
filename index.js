@@ -1,23 +1,22 @@
 const fs = require('fs');
-const PNG = require('pngjs').PNG
+const PNG = require('pngjs').PNG;
 const stream = require('stream');
-const Jimp = require("jimp");
+const Jimp = require('jimp');
+const variables = require('./variables.json');
 
 (async () => {
-  let fileName = 'cube';
-
-  if (!fs.existsSync(`./images/${fileName}.png`)) {
-    Jimp.read(`./images/${fileName}.jpg`, function (err, image) {
+  if (!fs.existsSync(`./images/${variables.imageFileName}.png`)) {
+    Jimp.read(`./images/${variables.imageFileName}.jpg`, function (err, image) {
       if (err) console.log(err);
-      else image.write(`./images/${fileName}.png`);
+      else image.write(`./images/${variables.imageFileName}.png`);
     });
     await delay(500);
   }
 
-  await cobRes(fs.readFileSync(`./images/${fileName}.png`), 70, buffer => fs.writeFileSync(`./images/${fileName}2.png`, buffer));
+  await cobRes(fs.readFileSync(`./images/${variables.imageFileName}.png`), variables.asciiHeight, buffer => fs.writeFileSync(`./images/${variables.imageFileName}2.png`, buffer));
   await delay(100);
 
-  await covertToASCII(fs.readFileSync(`./images/${fileName}2.png`), 5, false);
+  await covertToASCII(fs.readFileSync(`./images/${variables.imageFileName}2.png`), variables.grayScaleBias, variables.darkOrLight);
 })();
 
 
