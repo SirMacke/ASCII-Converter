@@ -50,7 +50,6 @@ function covertToASCII(iBuf, spaces, blackWhite) {
 
 
 async function cobRes(iBuf, height, cb) {
-  console.log(iBuf)
   b2s(iBuf)
   .pipe(new PNG({
     filterType: -1
