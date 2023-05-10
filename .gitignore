@@ -1,4 +1,2 @@
-images/**
-!images/cube.jpg
-results/**
 node_modules
+.nuxt
