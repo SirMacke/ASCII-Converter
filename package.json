@@ -1,15 +1,28 @@
 {
   "name": "ascii-converter",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "",
   "main": "index.js",
   "scripts": {
-    "index": "node index"
+    "dev": "nuxt dev",
+    "build": "nuxt build",
+    "start": "nuxt start"
   },
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@nuxt/image-edge": "^1.0.0-28059208.2abef1b",
+    "@nuxtjs/fontaine": "^0.2.5",
     "jimp": "^0.16.1",
-    "pngjs": "^6.0.0"
-  }
+    "mongoose": "^7.1.0",
+    "nuxt": "^3.4.3",
+    "nuxt-delay-hydration": "^1.1.4",
+    "pngjs": "^6.0.0",
+    "sass": "^1.62.1"
+  },
+  "engines": {
+    "node": "18.15.0",
+    "npm": "9.6.2"
+  },
+  "type": "module"
 }
