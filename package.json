@@ -1,28 +1,73 @@
 {
-  "name": "ascii-converter",
-  "version": "1.2.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "dev": "nuxt dev",
-    "build": "nuxt build",
-    "start": "nuxt start"
+  "name": "@sirmacke/ascii-converter",
+  "version": "2.0.0",
+  "description": "Convert images to ASCII art in the terminal, with colour, custom character ramps and a small library API.",
+  "keywords": [
+    "ascii",
+    "ascii-art",
+    "image",
+    "terminal",
+    "cli",
+    "ansi",
+    "converter",
+    "gif"
+  ],
+  "license": "MIT",
+  "author": "Maxmilian Helmersson (https://github.com/SirMacke)",
+  "homepage": "https://github.com/SirMacke/ASCII-Converter#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SirMacke/ASCII-Converter.git"
   },
-  "author": "",
-  "license": "ISC",
-  "dependencies": {
-    "@nuxt/image-edge": "^1.0.0-28059208.2abef1b",
-    "@nuxtjs/fontaine": "^0.2.5",
-    "jimp": "^0.16.1",
-    "mongoose": "^7.1.0",
-    "nuxt": "^3.4.3",
-    "nuxt-delay-hydration": "^1.1.4",
-    "pngjs": "^6.0.0",
-    "sass": "^1.62.1"
+  "bugs": {
+    "url": "https://github.com/SirMacke/ASCII-Converter/issues"
   },
+  "type": "module",
+  "bin": {
+    "ascii-converter": "dist/cli/bin.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/core/index.d.ts",
+      "default": "./dist/core/index.js"
+    },
+    "./node": {
+      "types": "./dist/node/index.d.ts",
+      "default": "./dist/node/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.map"
+  ],
+  "sideEffects": false,
   "engines": {
-    "node": "18.15.0",
-    "npm": "9.6.2"
+    "node": ">=20"
   },
-  "type": "module"
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p web/tsconfig.json",
+    "test": "npm run build && vitest run",
+    "dev:web": "vite",
+    "build:web": "vite build",
+    "preview:web": "vite preview",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "jpeg-js": "^0.4.4",
+    "omggif": "^1.0.10",
+    "pngjs": "^7.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@types/omggif": "^1.0.5",
+    "@types/pngjs": "^6.0.5",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.1",
+    "vitest": "^5.0.2"
+  }
 }
