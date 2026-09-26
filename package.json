@@ -43,7 +43,7 @@
   ],
   "sideEffects": false,
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "publishConfig": {
     "access": "public"
@@ -63,7 +63,7 @@
     "pngjs": "^7.0.0"
   },
   "devDependencies": {
-    "@types/node": "^20.19.43",
+    "@types/node": "^22.20.4",
     "@types/omggif": "^1.0.5",
     "@types/pngjs": "^6.0.5",
     "typescript": "^7.0.2",

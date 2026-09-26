@@ -35,7 +35,7 @@ The image above is [`examples/cube.jpg`](examples/cube.jpg) converted with `asci
 
 ## Command line
 
-Requires Node.js 20 or later.
+Requires Node.js 22 or later.
 
 ```sh
 npx @sirmacke/ascii-converter photo.jpg
