@@ -1,8 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import jpeg from 'jpeg-js';
-import { GifReader } from 'omggif';
 import pngjs from 'pngjs';
 import type { PixelData } from '../core/convert.js';
+import { decodeGifFrames } from '../formats/gif.js';
 
 export interface DecodedImage extends PixelData {
   data: Uint8Array;
@@ -47,7 +47,7 @@ export function decodeFrames(bytes: Uint8Array, options: { firstOnly?: boolean }
       return [{ data: new Uint8Array(png.data), width: png.width, height: png.height, delay: 0 }];
     }
     case 'gif':
-      return decodeGif(bytes, options.firstOnly ?? false);
+      return decodeGifFrames(bytes, options);
     case undefined:
       throw new Error('Unrecognised image format. Supported formats: JPEG, PNG, GIF.');
     default:
@@ -70,33 +70,6 @@ function decodeJpeg(bytes: Uint8Array): DecodedImage {
   return orient({ data, width, height }, jpegOrientation(bytes));
 }
 
-function decodeGif(bytes: Uint8Array, firstOnly: boolean): DecodedFrame[] {
-  const reader = new GifReader(bytes);
-  const { width, height } = reader;
-  const canvas = new Uint8Array(width * height * 4);
-  const count = firstOnly ? Math.min(1, reader.numFrames()) : reader.numFrames();
-  if (count === 0) throw new Error('GIF contains no frames.');
-
-  const frames: DecodedFrame[] = [];
-  for (let i = 0; i < count; i++) {
-    const info = reader.frameInfo(i);
-    const previous = info.disposal === 3 ? canvas.slice() : undefined;
-    reader.decodeAndBlitFrameRGBA(i, canvas);
-    // Browsers treat delays of 0 or 1 centiseconds as 100 ms.
-    frames.push({ data: canvas.slice(), width, height, delay: info.delay <= 1 ? 100 : info.delay * 10 });
-
-    if (info.disposal === 2) {
-      // Restore the frame's area to transparent.
-      for (let y = info.y; y < Math.min(height, info.y + info.height); y++) {
-        const start = (y * width + info.x) * 4;
-        canvas.fill(0, start, start + Math.min(info.width, width - info.x) * 4);
-      }
-    } else if (previous) {
-      canvas.set(previous);
-    }
-  }
-  return frames;
-}
 
 /** Read the EXIF orientation tag (1-8) from a JPEG, or 1 if there is none. */
 export function jpegOrientation(bytes: Uint8Array): number {
