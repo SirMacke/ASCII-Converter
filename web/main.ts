@@ -1,5 +1,5 @@
 import { convert, toHtml, toText, type AsciiArt, type ConvertOptions } from '../src/core/index.js';
-import sampleUrl from '../examples/cube.jpg';
+import sampleUrl from '../examples/spheres.png';
 
 // Images are scaled down to this many pixels on the long side once, on load.
 // The converter averages pixels per character, so more detail is wasted.
@@ -123,7 +123,7 @@ function download(contents: string, type: string, ext: string): void {
 
 async function loadSample(): Promise<void> {
   const res = await fetch(sampleUrl);
-  await load(await res.blob(), 'cube.jpg');
+  await load(await res.blob(), 'spheres.png');
 }
 
 controls.addEventListener('input', schedule);

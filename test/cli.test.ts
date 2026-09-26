@@ -14,7 +14,8 @@ import { gridSize } from '../src/core/index.js';
 import { decodeFrames, decodeImage, detectFormat, jpegOrientation } from '../src/node/index.js';
 
 const root = new URL('..', import.meta.url);
-const cube = fileURLToPath(new URL('examples/cube.jpg', root));
+const spheres = fileURLToPath(new URL('examples/spheres.png', root));
+const orbit = fileURLToPath(new URL('examples/orbit.gif', root));
 let dir: string;
 let png: string;
 let gif: string;
@@ -35,12 +36,16 @@ function makeGif(): Buffer {
   return Buffer.from(buf.subarray(0, writer.end()));
 }
 
-/** A JPEG whose EXIF says "rotate 90 degrees clockwise to display". */
-function makeRotatedJpeg(): Buffer {
-  // 16x8: left half black, right half white.
+/** A 16x8 JPEG: left half black, right half white. */
+function makeJpeg(): Buffer {
   const data = Buffer.alloc(16 * 8 * 4);
   for (let y = 0; y < 8; y++) for (let x = 0; x < 16; x++) data.fill(x < 8 ? 0 : 255, (y * 16 + x) * 4, (y * 16 + x) * 4 + 3);
-  const encoded = jpeg.encode({ data, width: 16, height: 8 }, 100).data;
+  return jpeg.encode({ data, width: 16, height: 8 }, 100).data;
+}
+
+/** The same JPEG with EXIF saying "rotate 90 degrees clockwise to display". */
+function makeRotatedJpeg(): Buffer {
+  const encoded = makeJpeg();
   // prettier-ignore
   const app1 = Buffer.from([
     0xff, 0xe1, 0x00, 0x22,                   // APP1, length 34
@@ -103,16 +108,16 @@ describe('cli', () => {
   });
 
   it('defaults to 80 columns when not writing to a terminal', async () => {
-    const res = await run([cube]);
+    const res = await run([spheres]);
     const lines = res.stdout.trimEnd().split('\n');
-    const img = decodeImage(readFileSync(cube));
+    const img = decodeImage(readFileSync(spheres));
     expect(res.code).toBe(0);
     expect(lines).toHaveLength(gridSize(img.width, img.height, { width: 80 }).rows);
     expect(lines.every((l) => l.length === 80)).toBe(true);
   });
 
   it('fits the terminal width when stdout is a TTY', async () => {
-    const res = await run([cube], { isTTY: true, columns: 50 });
+    const res = await run([spheres], { isTTY: true, columns: 50 });
     expect(res.stdout.split('\n')[0]).toHaveLength(49);
   });
 
@@ -130,10 +135,10 @@ describe('cli', () => {
     const html = join(dir, 'out.html');
     expect((await run([png, '-w', '4', '--char-aspect', '1', '-r', ' #', '-o', txt])).code).toBe(0);
     expect(readFileSync(txt, 'utf8')).toBe('  ##\n  ##\n');
-    expect((await run([cube, '-w', '40', '-c', '-i', '-o', html])).code).toBe(0);
+    expect((await run([spheres, '-w', '40', '-c', '-i', '-o', html])).code).toBe(0);
     const page = readFileSync(html, 'utf8');
     expect(page).toMatch(/^<!doctype html>/);
-    expect(page).toContain('<title>cube.jpg</title>');
+    expect(page).toContain('<title>spheres.png</title>');
     expect(page).toContain('<span style="color:#');
     expect(page).toContain('background: #fff');
   });
@@ -176,14 +181,22 @@ describe('cli', () => {
     const bin = new URL('dist/cli/bin.js', root);
     const source = readFileSync(bin, 'utf8');
     expect(source.startsWith('#!/usr/bin/env node\n')).toBe(true);
-    const { stdout } = await promisify(execFile)(process.execPath, [fileURLToPath(bin), cube, '-w', '30']);
-    expect(stdout.trimEnd().split('\n')).toHaveLength(15);
+    const { stdout } = await promisify(execFile)(process.execPath, [fileURLToPath(bin), spheres, '-w', '30']);
+    // 480x360 at 30 columns with 2:1 cells: round(30 * 0.75 / 2) = 11 rows.
+    expect(stdout.trimEnd().split('\n')).toHaveLength(11);
+  });
+
+  it('plays the example GIF', async () => {
+    const res = await run([orbit, '-w', '20', '-a', '--loops', '1']);
+    expect(res.code).toBe(0);
+    // 30 frames: 29 cursor jumps back to the top of the previous frame.
+    expect(res.stdout.match(/\r\x1b\[\d+A/g)).toHaveLength(29);
   });
 });
 
 describe('decoders', () => {
   it('detects formats from magic bytes', () => {
-    expect(detectFormat(readFileSync(cube))).toBe('jpeg');
+    expect(detectFormat(makeJpeg())).toBe('jpeg');
     expect(detectFormat(readFileSync(png))).toBe('png');
     expect(detectFormat(readFileSync(gif))).toBe('gif');
     expect(detectFormat(Buffer.from('BM'))).toBe('bmp');
@@ -193,7 +206,7 @@ describe('decoders', () => {
   it('applies EXIF orientation to JPEGs', () => {
     const bytes = makeRotatedJpeg();
     expect(jpegOrientation(bytes)).toBe(6);
-    expect(jpegOrientation(readFileSync(cube))).toBe(1);
+    expect(jpegOrientation(makeJpeg())).toBe(1);
     const img = decodeImage(bytes);
     expect([img.width, img.height]).toEqual([8, 16]);
     // Rotated clockwise: the black left half is now on top.
@@ -207,5 +220,8 @@ describe('decoders', () => {
     expect(frames.map((f) => f.delay)).toEqual([20, 20]);
     expect(frames[0]!.data[0]).toBe(0);
     expect(frames[1]!.data[0]).toBe(255);
+    const example = decodeFrames(readFileSync(orbit));
+    expect(example).toHaveLength(30);
+    expect(example.every((f) => f.delay === 50 && f.width === 240 && f.height === 180)).toBe(true);
   });
 });

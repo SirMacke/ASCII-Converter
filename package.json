@@ -55,6 +55,7 @@
     "dev:web": "vite",
     "build:web": "vite build",
     "preview:web": "vite preview",
+    "examples": "node scripts/make-examples.mjs",
     "prepack": "npm run build"
   },
   "dependencies": {
