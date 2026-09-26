@@ -5,7 +5,8 @@
     "rootDir": "src",
     "outDir": "dist",
     "declaration": true,
-    "sourceMap": false
+    "sourceMap": false,
+    "newLine": "lf"
   },
   "include": ["src"]
 }
