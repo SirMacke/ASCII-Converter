@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ASCII Converter</title>
+    <meta name="description" content="Turn an image into ASCII art in your browser. Nothing is uploaded." />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23111'/%3E%3Ctext x='8' y='12.5' font-family='monospace' font-size='12' font-weight='bold' fill='%23ddd' text-anchor='middle'%3E@%3C/text%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>ASCII Converter</h1>
+      <p>
+        Drop, paste or pick an image. It is converted in your browser; nothing is uploaded.
+        Same engine as the <a href="https://github.com/SirMacke/ASCII-Converter">command-line tool</a>.
+      </p>
+    </header>
+
+    <main>
+      <form id="controls" autocomplete="off">
+        <div class="row">
+          <label class="button" for="file">Choose image</label>
+          <input id="file" type="file" accept="image/*" hidden />
+          <button type="button" id="sample">Sample</button>
+        </div>
+
+        <label>
+          <span>Width <output id="width-value"></output></span>
+          <input id="width" type="range" min="10" max="300" value="100" />
+        </label>
+
+        <label>
+          Ramp
+          <select id="ramp">
+            <option value="standard">standard</option>
+            <option value="detailed">detailed</option>
+            <option value="blocks">blocks</option>
+            <option value="minimal">minimal</option>
+            <option value="custom">custom…</option>
+          </select>
+        </label>
+        <label id="custom-ramp-label" hidden>
+          Characters, lightest first
+          <input id="custom-ramp" type="text" value=" .oO@" spellcheck="false" />
+        </label>
+
+        <label>
+          <span>Brightness <output id="brightness-value"></output></span>
+          <input id="brightness" type="range" min="-1" max="1" step="0.05" value="0" />
+        </label>
+        <label>
+          <span>Contrast <output id="contrast-value"></output></span>
+          <input id="contrast" type="range" min="0" max="3" step="0.05" value="1" />
+        </label>
+        <label>
+          <span>Gamma <output id="gamma-value"></output></span>
+          <input id="gamma" type="range" min="0.2" max="3" step="0.05" value="1" />
+        </label>
+
+        <fieldset>
+          <label class="check"><input id="invert" type="checkbox" checked /> Invert (light background)</label>
+          <label class="check"><input id="color" type="checkbox" /> Colour</label>
+          <label class="check"><input id="dither" type="checkbox" /> Dither</label>
+        </fieldset>
+
+        <div class="row">
+          <button type="button" id="copy">Copy text</button>
+          <button type="button" id="download-txt">.txt</button>
+          <button type="button" id="download-html">.html</button>
+        </div>
+        <p id="status" role="status"></p>
+      </form>
+
+      <section id="stage" aria-label="Output">
+        <pre id="output" class="ascii-art"></pre>
+        <p id="drop-hint">Drop an image here</p>
+      </section>
+    </main>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
