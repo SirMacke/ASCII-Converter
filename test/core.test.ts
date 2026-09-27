@@ -160,6 +160,7 @@ describe('convert', () => {
     expect(() => convert(grey(1, 1, [0]), { gamma: 0 })).toThrow(/gamma/);
     expect(() => convert(grey(1, 1, [0]), { contrast: -1 })).toThrow(/contrast/);
     expect(() => convert(grey(1, 1, [0]), { brightness: Number.NaN })).toThrow(/brightness/);
+    expect(() => convert(grey(1, 1, [0]), { width: 5000 })).toThrow(/Output would be 5000x2500 characters/);
   });
 });
 

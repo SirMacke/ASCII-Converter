@@ -2,7 +2,10 @@ import { readFile } from 'node:fs/promises';
 import jpeg from 'jpeg-js';
 import pngjs from 'pngjs';
 import type { PixelData } from '../core/convert.js';
-import { decodeGifFrames } from '../formats/gif.js';
+import { gifFrames } from '../formats/gif.js';
+import { MAX_PIXELS, checkPixels } from '../formats/limits.js';
+
+export { MAX_PIXELS } from '../formats/limits.js';
 
 export interface DecodedImage extends PixelData {
   data: Uint8Array;
@@ -14,6 +17,13 @@ export interface DecodedFrame extends DecodedImage {
 }
 
 export type ImageFormat = 'jpeg' | 'png' | 'gif';
+
+export interface DecodeOptions {
+  /** Only decode the first frame of an animated GIF. */
+  firstOnly?: boolean;
+  /** Refuse images with more pixels than this. Default MAX_PIXELS (100 million). */
+  maxPixels?: number;
+}
 
 /** Identify an image by its first bytes rather than trusting the file extension. */
 export function detectFormat(bytes: Uint8Array): ImageFormat | 'webp' | 'bmp' | 'tiff' | undefined {
@@ -28,8 +38,8 @@ export function detectFormat(bytes: Uint8Array): ImageFormat | 'webp' | 'bmp' | 
 }
 
 /** Decode a JPEG, PNG or GIF (first frame) into RGBA pixels. */
-export function decodeImage(bytes: Uint8Array): DecodedImage {
-  const [first] = decodeFrames(bytes, { firstOnly: true });
+export function decodeImage(bytes: Uint8Array, options: Omit<DecodeOptions, 'firstOnly'> = {}): DecodedImage {
+  const [first] = decodeFrames(bytes, { ...options, firstOnly: true });
   return { data: first!.data, width: first!.width, height: first!.height };
 }
 
@@ -37,17 +47,29 @@ export function decodeImage(bytes: Uint8Array): DecodedImage {
  * Decode every frame of an animated GIF, composited the way a browser
  * would show them. JPEG and PNG return a single frame with delay 0.
  */
-export function decodeFrames(bytes: Uint8Array, options: { firstOnly?: boolean } = {}): DecodedFrame[] {
+export function decodeFrames(bytes: Uint8Array, options: DecodeOptions = {}): DecodedFrame[] {
+  return Array.from(iterateFrames(bytes, options));
+}
+
+/** Like decodeFrames, one frame at a time. */
+export function* iterateFrames(bytes: Uint8Array, options: DecodeOptions = {}): Generator<DecodedFrame, void, undefined> {
   const format = detectFormat(bytes);
+  const maxPixels = options.maxPixels ?? MAX_PIXELS;
   switch (format) {
     case 'jpeg':
-      return [{ ...decodeJpeg(bytes), delay: 0 }];
-    case 'png': {
-      const png = pngjs.PNG.sync.read(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
-      return [{ data: new Uint8Array(png.data), width: png.width, height: png.height, delay: 0 }];
+      yield { ...decoding('JPEG', () => decodeJpeg(bytes, maxPixels)), delay: 0 };
+      return;
+    case 'png':
+      yield { ...decoding('PNG', () => decodePng(bytes, maxPixels)), delay: 0 };
+      return;
+    case 'gif': {
+      const frames = decoding('GIF', () => gifFrames(bytes, { firstOnly: options.firstOnly, maxPixels }));
+      for (;;) {
+        const next = decoding('GIF', () => frames.next());
+        if (next.done) return;
+        yield next.value;
+      }
     }
-    case 'gif':
-      return decodeGifFrames(bytes, options);
     case undefined:
       throw new Error('Unrecognised image format. Supported formats: JPEG, PNG, GIF.');
     default:
@@ -56,18 +78,56 @@ export function decodeFrames(bytes: Uint8Array, options: { firstOnly?: boolean }
 }
 
 /** Read and decode an image file. */
-export async function readImage(path: string): Promise<DecodedImage> {
-  return decodeImage(await readFile(path));
+export async function readImage(path: string, options: Omit<DecodeOptions, 'firstOnly'> = {}): Promise<DecodedImage> {
+  return decodeImage(await readFile(path), options);
 }
 
-function decodeJpeg(bytes: Uint8Array): DecodedImage {
+/** Run a decoder, prefixing its (often terse) errors with the format. Size-limit errors pass through. */
+function decoding<T>(format: string, fn: () => T): T {
+  try {
+    return fn();
+  } catch (error) {
+    if (error instanceof RangeError) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Could not decode ${format}: ${message}`, { cause: error });
+  }
+}
+
+function decodePng(bytes: Uint8Array, maxPixels: number): DecodedImage {
+  // IHDR is always the first chunk: width and height at bytes 16-23.
+  if (bytes.length >= 24) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    checkPixels(view.getUint32(16), view.getUint32(20), maxPixels);
+  }
+  const png = pngjs.PNG.sync.read(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+  return { data: new Uint8Array(png.data.buffer, png.data.byteOffset, png.data.byteLength), width: png.width, height: png.height };
+}
+
+function decodeJpeg(bytes: Uint8Array, maxPixels: number): DecodedImage {
+  const size = jpegSize(bytes);
+  if (size) checkPixels(size.width, size.height, maxPixels);
   const { data, width, height } = jpeg.decode(bytes, {
     useTArray: true,
     formatAsRGBA: true,
-    maxResolutionInMP: 250,
+    maxResolutionInMP: maxPixels / 1e6,
     maxMemoryUsageInMB: 2048,
   });
   return orient({ data, width, height }, jpegOrientation(bytes));
+}
+
+/** Width and height from a JPEG's start-of-frame header, if one comes before the image data. */
+export function jpegSize(bytes: Uint8Array): { width: number; height: number } | undefined {
+  let i = 2;
+  while (i + 9 <= bytes.length && bytes[i] === 0xff) {
+    const marker = bytes[i + 1]!;
+    if (marker === 0xda || marker === 0xd9) break; // Start of scan / end of image
+    // SOF0-SOF15, except DHT (C4), JPG (C8) and DAC (CC).
+    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+      return { height: (bytes[i + 5]! << 8) | bytes[i + 6]!, width: (bytes[i + 7]! << 8) | bytes[i + 8]! };
+    }
+    i += 2 + ((bytes[i + 2]! << 8) | bytes[i + 3]!);
+  }
+  return undefined;
 }
 
 

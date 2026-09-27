@@ -44,6 +44,8 @@ export interface GridSize {
 
 const DEFAULT_WIDTH = 80;
 const DEFAULT_CHAR_ASPECT = 2;
+/** Largest grid convert() will build. Far beyond any useful output; it stops typos like width 100000 from exhausting memory. */
+const MAX_CELLS = 10_000_000;
 
 /**
  * Work out how many columns and rows an image of the given pixel size
@@ -105,6 +107,9 @@ export function convert(image: PixelData, options: ConvertOptions = {}): AsciiAr
 
   const { columns, rows } = gridSize(w, h, options);
   const cells = columns * rows;
+  if (cells > MAX_CELLS) {
+    throw new RangeError(`Output would be ${columns}x${rows} characters, over the limit of ${MAX_CELLS.toLocaleString('en')}. Use a smaller width or height.`);
+  }
   const ink = new Float64Array(cells);
   const colors = new Uint8Array(cells * 3);
 
