@@ -9,9 +9,10 @@ import jpeg from 'jpeg-js';
 import { GifWriter } from 'omggif';
 import pngjs from 'pngjs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { main, type CliIO } from '../src/cli/main.js';
+import { joinNegativeValues, main, type CliIO } from '../src/cli/main.js';
 import { gridSize } from '../src/core/index.js';
-import { decodeFrames, decodeImage, detectFormat, jpegOrientation } from '../src/node/index.js';
+import { jpegSize } from '../src/node/decode.js';
+import { MAX_PIXELS, decodeFrames, decodeImage, detectFormat, jpegOrientation } from '../src/node/index.js';
 
 const root = new URL('..', import.meta.url);
 const spheres = fileURLToPath(new URL('examples/spheres.png', root));
@@ -157,7 +158,7 @@ describe('cli', () => {
   });
 
   it('exits 2 on usage errors', async () => {
-    for (const args of [[], [png, png], [png, '--nope'], [png, '-w', '0'], [png, '-w', 'ten'], [png, '-r', 'x'], [png, '--gamma', '0'], [png, '--color-depth', '16'], [gif, '-a', '-o', 'x.txt']]) {
+    for (const args of [[], [png, png], [png, '--nope'], [png, '-w', '0'], [png, '-w', 'ten'], [png, '-r', 'x'], [png, '--gamma', '0'], [png, '--color-depth', '16'], [gif, '-a', '-o', 'x.txt'], [png, '--loops', 'x']]) {
       const res = await run(args);
       expect(res.code, args.join(' ')).toBe(2);
       expect(res.stderr).toMatch(/^ascii-converter: .+\nRun "ascii-converter --help" for usage\.\n$/);
@@ -186,6 +187,50 @@ describe('cli', () => {
     expect(stdout.trimEnd().split('\n')).toHaveLength(11);
   });
 
+  it('accepts negative numbers after an option', async () => {
+    const res = await run([png, '-w', '4', '--char-aspect', '1', '-r', ' #', '-b', '-0.6']);
+    expect(res).toEqual({ code: 0, stdout: '    \n    \n', stderr: '' });
+    expect((await run([png, '-w', '4', '--brightness', '-.6', '-r', ' #', '--char-aspect', '1'])).stdout).toBe('    \n    \n');
+    expect(joinNegativeValues(['-b', '-0.2', '-g', '2', '--contrast', '-1', '-o', 'x', '--', '-b', '-1'])).toEqual([
+      '--brightness=-0.2', '-g', '2', '--contrast=-1', '-o', 'x', '--', '-b', '-1',
+    ]);
+  });
+
+  it('refuses to write text over an image or the input file', async () => {
+    const copy = join(dir, 'copy.png');
+    writeFileSync(copy, readFileSync(png));
+    for (const out of [copy, join(dir, 'new.JPG')]) {
+      const res = await run([copy, '-o', out]);
+      expect(res.code).toBe(2);
+      expect(res.stderr).toContain('not images');
+    }
+    const noExt = join(dir, 'image');
+    writeFileSync(noExt, readFileSync(png));
+    expect(await run([noExt, '-o', noExt])).toMatchObject({ code: 2, stderr: expect.stringContaining('refusing to overwrite') });
+    expect(readFileSync(copy)).toEqual(readFileSync(png));
+    expect(readFileSync(noExt)).toEqual(readFileSync(png));
+  });
+
+  it('plays an animation once when stdout is not a terminal', async () => {
+    const res = await run([gif, '-w', '2', '--char-aspect', '1', '-r', ' #', '--animate']);
+    expect(res.stdout).toBe('\x1b[?25l  \n  \r\x1b[1A##\n##\x1b[0m\x1b[?25h\n');
+  });
+
+  it('rejects absurd output sizes with a clear message', async () => {
+    const res = await run([png, '-w', '100000']);
+    expect(res.code).toBe(1);
+    expect(res.stderr).toContain('Output would be 100000x25000 characters');
+  });
+
+  it('refuses images over the pixel limit before decoding them', async () => {
+    const bomb = readFileSync(png);
+    bomb.writeUInt32BE(60000, 16);
+    bomb.writeUInt32BE(60000, 20);
+    const file = join(dir, 'bomb.png');
+    writeFileSync(file, bomb);
+    expect(await run([file])).toMatchObject({ code: 1, stderr: expect.stringContaining('over the limit of 100,000,000 pixels') });
+  });
+
   it('plays the example GIF', async () => {
     const res = await run([orbit, '-w', '20', '-a', '--loops', '1']);
     expect(res.code).toBe(0);
@@ -212,6 +257,25 @@ describe('decoders', () => {
     // Rotated clockwise: the black left half is now on top.
     expect(img.data[(3 * 8 + 4) * 4]).toBeLessThan(40);
     expect(img.data[(12 * 8 + 4) * 4]).toBeGreaterThan(215);
+  });
+
+  it('checks the pixel limit from the header of every format', () => {
+    expect(jpegSize(makeJpeg())).toEqual({ width: 16, height: 8 });
+    expect(() => decodeImage(makeJpeg(), { maxPixels: 127 })).toThrow(/16×8 pixels, over the limit of 127/);
+    expect(decodeImage(makeJpeg(), { maxPixels: 128 }).width).toBe(16);
+    expect(() => decodeImage(readFileSync(png), { maxPixels: 7 })).toThrow(RangeError);
+    expect(() => decodeFrames(readFileSync(gif), { maxPixels: 3 })).toThrow(/2×2 pixels/);
+    // A GIF whose logical screen claims 65535x65535.
+    const huge = Buffer.from(makeGif());
+    huge.writeUInt16LE(65535, 6);
+    huge.writeUInt16LE(65535, 8);
+    expect(() => decodeFrames(huge)).toThrow(/65535×65535 pixels/);
+    expect(MAX_PIXELS).toBe(100_000_000);
+  });
+
+  it('names the format when a file is corrupt', () => {
+    expect(() => decodeImage(readFileSync(png).subarray(0, 40))).toThrow(/^Could not decode PNG: /);
+    expect(() => decodeImage(makeJpeg().subarray(0, 100))).toThrow(/^Could not decode JPEG: /);
   });
 
   it('decodes every GIF frame with its delay', () => {

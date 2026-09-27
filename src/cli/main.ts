@@ -1,9 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
-import { basename, extname } from 'node:path';
+import { basename, extname, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { RAMPS, convert, toAnsi, toHtml, toText, type ColorDepth, type ConvertOptions } from '../core/index.js';
-import { decodeFrames } from '../node/decode.js';
+import { iterateFrames, type DecodedFrame } from '../node/decode.js';
 
 export interface CliIO {
   stdout: NodeJS.WritableStream & { isTTY?: boolean; columns?: number; rows?: number };
@@ -32,8 +32,10 @@ Options:
   -g, --gamma <n>        Gamma, above 1 brightens mid-tones (default: 1)
       --char-aspect <n>  Character cell height divided by width (default: 2)
   -a, --animate          Play an animated GIF in the terminal (Ctrl+C to stop)
-      --loops <n>        With --animate, stop after n loops (default: forever)
-  -o, --out <file>       Write to a file. .html or .htm writes a web page, anything else plain text
+      --loops <n>        With --animate, stop after n loops (default: forever in a
+                         terminal, once when piped)
+  -o, --out <file>       Write to a file. .html or .htm writes a web page, anything else
+                         plain text. Image file names are refused.
   -h, --help             Show this help
   -v, --version          Show the version
 
@@ -52,7 +54,8 @@ export async function main(argv: string[], io: CliIO = processIO()): Promise<num
     return await run(argv, io);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (error instanceof UsageError || (error as { code?: string }).code?.startsWith('ERR_PARSE_ARGS')) {
+    const code = (error as { code?: unknown } | null)?.code;
+    if (error instanceof UsageError || (typeof code === 'string' && code.startsWith('ERR_PARSE_ARGS'))) {
       io.stderr.write(`${NAME}: ${message}\nRun "${NAME} --help" for usage.\n`);
       return 2;
     }
@@ -61,29 +64,61 @@ export async function main(argv: string[], io: CliIO = processIO()): Promise<num
   }
 }
 
+const OPTIONS = {
+  width: { type: 'string', short: 'w' },
+  height: { type: 'string', short: 'H' },
+  ramp: { type: 'string', short: 'r' },
+  invert: { type: 'boolean', short: 'i' },
+  color: { type: 'boolean', short: 'c' },
+  'color-depth': { type: 'string' },
+  dither: { type: 'boolean', short: 'd' },
+  brightness: { type: 'string', short: 'b' },
+  contrast: { type: 'string' },
+  gamma: { type: 'string', short: 'g' },
+  'char-aspect': { type: 'string' },
+  animate: { type: 'boolean', short: 'a' },
+  loops: { type: 'string' },
+  out: { type: 'string', short: 'o' },
+  help: { type: 'boolean', short: 'h' },
+  version: { type: 'boolean', short: 'v' },
+} as const;
+
+/** File types --out refuses, because the CLI writes text and would clobber an image. */
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tif', '.tiff', '.avif']);
+
+/**
+ * parseArgs reads "-b -0.2" as a missing value followed by an unknown
+ * option. Join a negative number onto the option before it so the obvious
+ * spelling works.
+ */
+export function joinNegativeValues(argv: string[]): string[] {
+  const takesValue = new Map<string, string>();
+  for (const [name, spec] of Object.entries(OPTIONS)) {
+    if (spec.type !== 'string') continue;
+    takesValue.set(`--${name}`, name);
+    if ('short' in spec) takesValue.set(`-${spec.short}`, name);
+  }
+  const out: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (arg === '--') {
+      out.push(...argv.slice(i));
+      break;
+    }
+    const name = takesValue.get(arg);
+    const next = argv[i + 1];
+    if (name && next !== undefined && /^-(\d|\.\d)/.test(next)) {
+      out.push(`--${name}=${next}`);
+      i++;
+    } else {
+      out.push(arg);
+    }
+  }
+  return out;
+}
+
 async function run(argv: string[], io: CliIO): Promise<number> {
-  const { values, positionals } = parseArgs({
-    args: argv,
-    allowPositionals: true,
-    options: {
-      width: { type: 'string', short: 'w' },
-      height: { type: 'string', short: 'H' },
-      ramp: { type: 'string', short: 'r' },
-      invert: { type: 'boolean', short: 'i' },
-      color: { type: 'boolean', short: 'c' },
-      'color-depth': { type: 'string' },
-      dither: { type: 'boolean', short: 'd' },
-      brightness: { type: 'string', short: 'b' },
-      contrast: { type: 'string' },
-      gamma: { type: 'string', short: 'g' },
-      'char-aspect': { type: 'string' },
-      animate: { type: 'boolean', short: 'a' },
-      loops: { type: 'string' },
-      out: { type: 'string', short: 'o' },
-      help: { type: 'boolean', short: 'h' },
-      version: { type: 'boolean', short: 'v' },
-    },
-  });
+  const { values, positionals } = parseArgs({ args: joinNegativeValues(argv), allowPositionals: true, options: OPTIONS });
 
   if (values.help) {
     io.stdout.write(HELP);
@@ -118,34 +153,53 @@ async function run(argv: string[], io: CliIO): Promise<number> {
     options.width = toTerminal && io.stdout.columns ? Math.max(1, io.stdout.columns - 1) : 80;
   }
   try {
-    // Validate the remaining options (ramp, ranges) on a 1x1 image before touching the input.
-    convert({ data: new Uint8Array(4), width: 1, height: 1 }, options);
+    // Validate the remaining options (ramp, ranges) on a 1x1 image before
+    // touching the input. Width and height are already checked, and a 1x1
+    // grid keeps this cheap whatever width was asked for.
+    convert({ data: new Uint8Array(4), width: 1, height: 1 }, { ...options, width: 1, height: undefined });
   } catch (error) {
     throw new UsageError((error as Error).message);
   }
+  // Without a terminal to redraw in, play once unless asked otherwise.
+  const loops = int('--loops', values.loops) ?? (io.stdout.isTTY === true ? 0 : 1);
 
   const source = positionals[0]!;
+  if (values.out) {
+    if (IMAGE_EXTENSIONS.has(extname(values.out).toLowerCase())) {
+      throw new UsageError(`--out writes text or HTML, not images; use a .txt or .html file name, not "${values.out}"`);
+    }
+    if (source !== '-' && resolve(values.out) === resolve(source)) {
+      throw new UsageError('--out is the input file; refusing to overwrite it');
+    }
+  }
   const bytes = source === '-' ? await readStream(io.stdin) : await readInput(source);
   if (bytes.length === 0) throw new Error('input is empty');
-  const frames = decodeFrames(bytes, { firstOnly: !values.animate });
+  const frames = iterateFrames(bytes, { firstOnly: !values.animate });
+  const first = frames.next();
+  if (first.done) throw new Error('image has no frames');
 
   const render = (art: ReturnType<typeof convert>): string =>
     values.color ? toAnsi(art, depth as ColorDepth) : toText(art);
 
-  if (values.animate && frames.length > 1) {
+  const second = values.animate ? frames.next() : undefined;
+  if (second && !second.done) {
     if (options.height === undefined && toTerminal && io.stdout.rows) {
       // Cursor movement can only redraw what is on screen, so fit the height.
       options.height = Math.max(1, io.stdout.rows - 1);
     }
-    const rendered = frames.map((frame) => {
+    // Convert frame by frame so only the text of each frame is kept.
+    const rendered: { text: string; rows: number; delay: number }[] = [];
+    const add = (frame: DecodedFrame): void => {
       const art = convert(frame, options);
-      return { text: render(art), rows: art.rows, delay: frame.delay };
-    });
-    await play(rendered, int('--loops', values.loops) ?? 0, io);
-    return 0;
+      rendered.push({ text: render(art), rows: art.rows, delay: frame.delay });
+    };
+    add(first.value);
+    add(second.value);
+    for (const frame of frames) add(frame);
+    return (await play(rendered, loops, io)) ? 130 : 0;
   }
 
-  const art = convert(frames[0]!, options);
+  const art = convert(first.value, options);
   if (!values.out) {
     io.stdout.write(`${render(art)}\n`);
     return 0;
@@ -165,12 +219,15 @@ async function run(argv: string[], io: CliIO): Promise<number> {
   return 0;
 }
 
-async function play(frames: { text: string; rows: number; delay: number }[], loops: number, io: CliIO): Promise<void> {
+/** Play rendered frames in place. Resolves to true if stopped with Ctrl+C. */
+async function play(frames: { text: string; rows: number; delay: number }[], loops: number, io: CliIO): Promise<boolean> {
   const out = io.stdout;
   let stopped = false;
   let wake: (() => void) | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const onSigint = (): void => {
     stopped = true;
+    clearTimeout(timer);
     wake?.();
   };
   process.once('SIGINT', onSigint);
@@ -184,9 +241,9 @@ async function play(frames: { text: string; rows: number; delay: number }[], loo
         if (!first) out.write(frame.rows > 1 ? `\r\x1b[${frame.rows - 1}A` : '\r');
         first = false;
         out.write(frame.text);
-        await new Promise<void>((resolve) => {
-          wake = resolve;
-          setTimeout(resolve, frame.delay);
+        await new Promise<void>((done) => {
+          wake = done;
+          timer = setTimeout(done, frame.delay);
         });
       }
     }
@@ -194,6 +251,7 @@ async function play(frames: { text: string; rows: number; delay: number }[], loo
     process.off('SIGINT', onSigint);
     out.write('\x1b[0m\x1b[?25h\n'); // reset colour, show cursor
   }
+  return stopped;
 }
 
 function detectColorDepth(env: CliIO['env']): ColorDepth {
