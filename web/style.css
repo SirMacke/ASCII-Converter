@@ -222,6 +222,11 @@ input[type='color'] {
 @media (max-width: 760px) {
   #stage {
     min-height: 200px;
+    /* Preview above the controls, so changes are visible while adjusting them.
+       Tall art scrolls inside the box instead of pushing the controls away. */
+    order: -1;
+    max-height: 60vh;
+    overflow: auto;
   }
 }
 
