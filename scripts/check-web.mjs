@@ -1,8 +1,8 @@
 // End-to-end check of the web page in headless Chrome, driven over the
 // DevTools protocol (Node 22+ has WebSocket built in).
 //
-//   npm run build:web && npx vite preview --port 4173 --strictPort
-//   node scripts/check-web.mjs [url]        # default http://localhost:4173/
+//   npm run check:web                   # builds web/dist, serves it on :4173, checks it
+//   node scripts/check-web.mjs <url>    # check a page that is already being served
 //
 // Set CHROME to the browser binary if it is not in a standard location.
 // Checks: no page scroll at 1920x1080, 1440x900 and 1366x768 with large,
@@ -15,6 +15,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import jpeg from 'jpeg-js';
 import pngjs from 'pngjs';
@@ -72,6 +73,26 @@ const shapes = [
     }
   }
   writeFileSync(big, pngjs.PNG.sync.write(png));
+}
+
+// Without an explicit URL, serve the built page (web/dist) ourselves.
+let preview;
+if (!args.some((a) => !a.startsWith('--'))) {
+  const vite = new URL('../node_modules/vite/bin/vite.js', import.meta.url);
+  preview = spawn(process.execPath, [fileURLToPath(vite), 'preview', '--port', '4173', '--strictPort'], {
+    cwd: fileURLToPath(new URL('..', import.meta.url)),
+    stdio: 'ignore',
+  });
+  for (let i = 0; ; i++) {
+    try {
+      if ((await fetch(url)).ok) break;
+    } catch {}
+    if (i > 150 || preview.exitCode !== null) {
+      preview.kill();
+      throw new Error('vite preview did not start on port 4173 (is it in use?)');
+    }
+    await sleep(100);
+  }
 }
 
 const chrome = spawn(
@@ -132,9 +153,11 @@ try {
   const waitFor = async (expression, timeout = 15000) => {
     const end = Date.now() + timeout;
     for (;;) {
-      const value = await evaluate(expression);
+      // The page may still be loading (elements missing), so an exception means "not yet".
+      let value, error;
+      try { value = await evaluate(expression); } catch (e) { error = e; }
       if (value) return value;
-      if (Date.now() > end) throw new Error(`Timed out waiting for ${expression}`);
+      if (Date.now() > end) throw error ?? new Error(`Timed out waiting for ${expression}`);
       await sleep(100);
     }
   };
@@ -402,6 +425,7 @@ try {
   ws.close();
 } finally {
   chrome.kill();
+  preview?.kill();
 }
 
 const failed = results.filter((r) => !r.ok).length;

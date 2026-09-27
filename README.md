@@ -192,7 +192,7 @@ npm run examples     # regenerate examples/spheres.png and examples/orbit.gif
 node dist/cli/bin.js examples/orbit.gif --animate --color
 ```
 
-`npm run check:web` tests the built page in headless Chrome. Start `npm run build:web && npm run preview:web -- --port 4173` first, and set `CHROME` if Chrome isn't installed in its usual place. It checks that the page doesn't scroll at 1920×1080, 1440×900 and 1366×768 with large, tiny, very wide and very tall images, and that a tall image stays within the browser's canvas limits on a phone. It also checks keyboard access to the file picker, that exported files have the chosen format and pixel size, that square crops have clean margins, that GIFs play at their frame delays, that messages survive playback, and that a recorded WebM plays back as video. Add `--readme` to re-export `examples/spheres-ascii.png`.
+`npm run check:web` builds the page, serves it on port 4173 and tests it in headless Chrome. Set `CHROME` if Chrome isn't installed in its usual place. It checks that the page doesn't scroll at 1920×1080, 1440×900 and 1366×768 with large, tiny, very wide and very tall images, and that a tall image stays within the browser's canvas limits on a phone. It also checks keyboard access to the file picker, that exported files have the chosen format and pixel size, that square crops have clean margins, that GIFs play at their frame delays, that messages survive playback, and that a recorded WebM plays back as video. Add `-- --readme` to re-export `examples/spheres-ascii.png`.
 
 ```text
 src/core/      conversion, ramps and renderers (no I/O, browser-safe)
