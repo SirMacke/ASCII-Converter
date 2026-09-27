@@ -5,9 +5,12 @@
 //   node scripts/check-web.mjs [url]        # default http://localhost:4173/
 //
 // Set CHROME to the browser binary if it is not in a standard location.
-// Checks: no page scroll at 1920x1080 and 1366x768 with a large image,
-// exported image sizes and formats, GIF playback timing, WebM recording,
-// and video playback of that recording. Exits 1 if anything fails.
+// Checks: no page scroll at 1920x1080, 1440x900 and 1366x768 with large,
+// tiny, very wide and very tall images; a tall image on a phone; keyboard
+// access to the file picker; the font licence; exported image sizes,
+// formats and square crops; GIF playback timing; messages surviving
+// playback; WebM recording and video playback of that recording.
+// Exits 1 if anything fails.
 
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -40,8 +43,20 @@ const check = (name, ok, detail) => {
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// A large portrait test image (tall images are the hardest to fit).
+// A large portrait test image (tall images are the hardest to fit), plus
+// extreme shapes: 1x1, a 4000x50 strip and a 50x4000 strip.
 const big = join(work, 'big.png');
+const shapes = [
+  ['tiny.png', 1, 1],
+  ['wide.png', 4000, 50],
+  ['tall.png', 50, 4000],
+].map(([name, width, height]) => {
+  const png = new pngjs.PNG({ width, height });
+  for (let i = 0; i < width * height; i++) png.data.set([(i * 7) % 256, 128, 200, 255], i * 4);
+  const path = join(work, name);
+  writeFileSync(path, pngjs.PNG.sync.write(png));
+  return { name, path, width, height };
+});
 {
   const width = 2400;
   const height = 3600;
@@ -137,6 +152,7 @@ try {
       return new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
     })()`);
   const status = () => evaluate(`document.getElementById('status').textContent`);
+  const info = () => evaluate(`document.getElementById('info').textContent`);
   const download = async (name, timeout = 20000) => {
     const end = Date.now() + timeout;
     const path = join(downloads, name);
@@ -158,16 +174,38 @@ try {
   await page('Page.enable', {});
   await page('DOM.enable', {});
 
+  const measure = () =>
+    evaluate(`(() => {
+      const r = (el) => { const b = el.getBoundingClientRect(); return { top: b.top, bottom: b.bottom, left: b.left, right: b.right }; };
+      return {
+        scrollHeight: document.documentElement.scrollHeight,
+        innerHeight,
+        scrollWidth: document.documentElement.scrollWidth,
+        innerWidth,
+        canvas: r(document.getElementById('preview')),
+        stage: r(document.getElementById('stage')),
+        info: document.getElementById('info').textContent,
+      };
+    })()`);
+  const fits = (m) =>
+    m.scrollHeight <= m.innerHeight &&
+    m.scrollWidth <= m.innerWidth &&
+    m.canvas.top >= m.stage.top &&
+    m.canvas.bottom <= m.stage.bottom &&
+    m.canvas.left >= m.stage.left &&
+    m.canvas.right <= m.stage.right;
+
   for (const [width, height] of [
     [1920, 1080],
+    [1440, 900],
     [1366, 768],
   ]) {
     const tag = `${width}x${height}`;
     await page('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
     await page('Page.navigate', { url });
-    await waitFor(`/^spheres\\.png, 480×360 → /.test(document.getElementById('status').textContent)`);
+    await waitFor(`/^spheres\\.png, 480×360 → /.test(document.getElementById('info').textContent)`);
     await setFile(big);
-    await waitFor(`document.getElementById('status').textContent.includes('big.png, 2400×3600 →')`);
+    await waitFor(`document.getElementById('info').textContent.includes('big.png, 2400×3600 →')`);
 
     for (const columns of [100, 300]) {
       await setControl('width', columns);
@@ -182,7 +220,7 @@ try {
           controlsOverflow: controls.scrollHeight - controls.clientHeight,
           canvas: r(document.getElementById('preview')),
           stage: r(document.getElementById('stage')),
-          status: document.getElementById('status').textContent,
+          status: document.getElementById('info').textContent,
         };
       })()`);
       const inside =
@@ -200,13 +238,25 @@ try {
     }
     const shot = await page('Page.captureScreenshot', { format: 'png' });
     writeFileSync(join(work, `page-${tag}.png`), Buffer.from(shot.data, 'base64'));
+
+    for (const shape of shapes) {
+      await setFile(shape.path);
+      await waitFor(`document.getElementById('info').textContent.startsWith(${JSON.stringify(`${shape.name}, ${shape.width}×${shape.height}`)})`);
+      const bad = [];
+      for (const columns of [10, 100, 300]) {
+        await setControl('width', columns);
+        const m = await measure();
+        if (!fits(m)) bad.push({ columns, ...m });
+      }
+      check(`${tag} ${shape.name}: no page scroll, preview inside the stage at widths 10/100/300`, bad.length === 0, bad[0]);
+    }
   }
 
   // Narrow screens: vertical scrolling is fine, sideways overflow is not.
   {
     await page('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
     await page('Page.navigate', { url });
-    await waitFor(`/^spheres\\.png, 480×360 → /.test(document.getElementById('status').textContent)`);
+    await waitFor(`/^spheres\\.png, 480×360 → /.test(document.getElementById('info').textContent)`);
     const m = await evaluate(`({
       scrollWidth: document.documentElement.scrollWidth,
       innerWidth,
@@ -215,12 +265,36 @@ try {
     check('390x844: no horizontal scroll, preview fits the width', m.scrollWidth <= m.innerWidth && m.canvasRight <= m.innerWidth, m);
     const shot = await page('Page.captureScreenshot', { format: 'png' });
     writeFileSync(join(work, 'page-390x844.png'), Buffer.from(shot.data, 'base64'));
+
+    // A tall strip used to ask for a 1000 x 34000 px canvas, which the browser refuses.
+    const tall = shapes.find((s) => s.name === 'tall.png');
+    await setFile(tall.path);
+    await waitFor(`document.getElementById('info').textContent.startsWith('tall.png')`);
+    for (const columns of [10, 300]) {
+      await setControl('width', columns);
+      const c = await evaluate(`(() => { const c = document.getElementById('preview'); return { width: c.width, height: c.height }; })()`);
+      check(
+        `390x844 tall.png width ${columns}: preview canvas within browser limits`,
+        c.width <= 16384 && c.height <= 16384 && c.width * c.height <= 16777216,
+        c,
+      );
+    }
     await page('Emulation.setDeviceMetricsOverride', { width: 1366, height: 768, deviceScaleFactor: 1, mobile: false });
     await page('Page.navigate', { url });
-    await waitFor(`/^spheres\\.png, 480×360 → /.test(document.getElementById('status').textContent)`);
+    await waitFor(`/^spheres\\.png, 480×360 → /.test(document.getElementById('info').textContent)`);
     await setFile(big);
-    await waitFor(`document.getElementById('status').textContent.includes('big.png, 2400×3600 →')`);
+    await waitFor(`document.getElementById('info').textContent.includes('big.png, 2400×3600 →')`);
   }
+
+  // The file picker is reachable from the keyboard.
+  const focused = await evaluate(
+    `(() => { const f = document.getElementById('file'); f.focus(); return document.activeElement === f && f.tabIndex >= 0; })()`,
+  );
+  check('Open file is keyboard focusable', focused);
+
+  // The bundled font's licence ships with the page.
+  const licence = await evaluate(`fetch('./JetBrainsMono-OFL.txt').then((r) => (r.ok ? r.text() : ''))`);
+  check('JetBrains Mono licence is served', licence.includes('SIL Open Font License'));
 
   // Export sizes and formats (1366x768 with big.png).
   await setControl('width', 100);
@@ -230,6 +304,27 @@ try {
   await evaluate(`document.getElementById('export').click()`);
   let bytes = await download('big.png');
   check('PNG 1024 square padded is 1024x1024', pngSize(bytes).join('x') === '1024x1024', pngSize(bytes));
+
+  // Square crop: whole cells and even margins, so no glyph is cut at the edges.
+  await setControl('square', 'crop');
+  await evaluate(`document.getElementById('export').click()`);
+  bytes = await download('big.png');
+  {
+    const img = pngjs.PNG.sync.read(bytes);
+    const band = 4;
+    let inked = 0;
+    for (let y = 0; y < img.height; y++) {
+      for (let x = 0; x < img.width; x++) {
+        if (x >= band && x < img.width - band && y >= band && y < img.height - band) continue;
+        const i = (y * img.width + x) * 4;
+        if (img.data[i] !== 0x0c || img.data[i + 1] !== 0x0c || img.data[i + 2] !== 0x0c) inked++;
+      }
+    }
+    check('PNG 1024 square cropped is 1024x1024 with clear margins', img.width === 1024 && img.height === 1024 && inked === 0, {
+      size: [img.width, img.height],
+      inkedEdgePixels: inked,
+    });
+  }
 
   await setControl('square', 'none');
   await setControl('size', 'x2');
@@ -252,7 +347,7 @@ try {
 
   // GIF playback: 30 frames at 50 ms, so about 20 frames per second.
   await setControl('sample', 'orbit');
-  await waitFor(`document.getElementById('status').textContent.includes('orbit.gif')`);
+  await waitFor(`document.getElementById('info').textContent.includes('orbit.gif')`);
   await waitFor(`document.getElementById('frame-info').textContent.startsWith('Frame')`);
   const frame = () => evaluate(`Number(document.getElementById('frame-info').textContent.match(/Frame (\\d+)/)[1])`);
   const f0 = await frame();
@@ -261,6 +356,12 @@ try {
   const f1 = await frame();
   const fps = ((f1 - f0 + 30) % 30 || 30) / ((Date.now() - t0) / 1000);
   check('GIF plays at its frame delays (about 20 fps)', fps > 14 && fps < 24, { fps: Number(fps.toFixed(1)) });
+  // Messages survive playback (frame updates used to overwrite them).
+  await evaluate(`document.getElementById('export').click()`);
+  await download('orbit.webp');
+  await sleep(500);
+  const message = await status();
+  check('Export message stays visible while the GIF plays', message.startsWith('Saved orbit.webp'), message);
   await evaluate(`document.getElementById('play').click()`);
   const paused = await frame();
   await sleep(400);
@@ -275,19 +376,19 @@ try {
   const video = join(work, 'orbit.webm');
   writeFileSync(video, bytes);
   await setFile(video);
-  await waitFor(`document.getElementById('status').textContent.includes('orbit.webm')`);
+  await waitFor(`document.getElementById('info').textContent.includes('orbit.webm')`);
   await waitFor(`/s$/.test(document.getElementById('frame-info').textContent)`);
   const time = () => evaluate(`parseFloat(document.getElementById('frame-info').textContent)`);
   const v0 = await time();
   await sleep(700);
   const v1 = await time();
   check('Video plays as live ASCII', v1 !== v0, { from: v0, to: v1 });
-  const s = await status();
+  const s = await info();
   check('Video frames are converted', /orbit\.webm, \d+×\d+ → \d+×\d+ characters/.test(s), s);
 
   if (writeReadmeImage) {
     await page('Page.navigate', { url });
-    await waitFor(`/^spheres\\.png, 480×360 → /.test(document.getElementById('status').textContent)`);
+    await waitFor(`/^spheres\\.png, 480×360 → /.test(document.getElementById('info').textContent)`);
     await setControl('width', 120);
     await setControl('gamma', 1.35);
     await setControl('size', '1024');

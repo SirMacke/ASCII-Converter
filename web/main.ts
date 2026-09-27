@@ -3,7 +3,17 @@ import { convert, toHtml, toText, type AsciiArt, type ConvertOptions } from '../
 import orbitUrl from '../examples/orbit.gif';
 import spheresUrl from '../examples/spheres.png';
 import { drawArt, measureCell, type DrawStyle } from './draw.js';
-import { FORMATS, exportLayout, fitFontSize, isExportFormat, parseSize, type CellMetrics, type SquareMode } from './layout.js';
+import {
+  FORMATS,
+  capFontSize,
+  exportLayout,
+  fitFontSize,
+  isExportFormat,
+  parseSize,
+  sliceArt,
+  type CellMetrics,
+  type SquareMode,
+} from './layout.js';
 import { closeSource, frameOf, openFile, type Source } from './media.js';
 
 const FONTS: Record<string, string> = {
@@ -23,6 +33,12 @@ const SAMPLES: Record<string, { url: string; name: string }> = {
 const EXPORT_PADDING = 1;
 /** Inner padding of the stage, in CSS pixels. */
 const STAGE_PADDING = 12;
+/**
+ * Most rows the page converts to. Only very tall images reach it (a 1:8
+ * strip at 100 columns); beyond it the preview can't fit a desktop window
+ * at a visible font size, so the width shrinks instead.
+ */
+const MAX_ROWS = 400;
 
 const byId = <T extends HTMLElement = HTMLInputElement>(id: string): T => document.getElementById(id) as T;
 
@@ -54,6 +70,7 @@ const recordButton = byId<HTMLButtonElement>('record');
 const stage = byId('stage');
 const preview = byId<HTMLCanvasElement>('preview');
 const status = byId('status');
+const info = byId('info');
 
 let source: Source | undefined;
 let art: AsciiArt | undefined;
@@ -67,6 +84,8 @@ let gifTimer = 0;
 let gifDeadline = 0;
 let coloursTouched = false;
 let loadToken = 0;
+/** Bumped by play() and pause() so a superseded video frame loop stops. */
+let playToken = 0;
 
 interface Recording {
   recorder: MediaRecorder;
@@ -84,6 +103,7 @@ function fontFamily(): string {
 function currentOptions(): ConvertOptions {
   return {
     width: Number(width.value),
+    height: MAX_ROWS,
     ramp: ramp.value === 'custom' ? customRamp.value : ramp.value,
     brightness: Number(brightness.value),
     contrast: Number(contrast.value),
@@ -117,16 +137,18 @@ function refresh(): void {
   stage.style.background = bg.value;
   if (!source) return;
 
+  const rampMessage = 'A custom ramp needs at least 2 characters.';
   if (ramp.value === 'custom' && Array.from(customRamp.value).length < 2) {
-    setStatus('A custom ramp needs at least 2 characters.');
+    setStatus(rampMessage);
     return;
   }
+  if (status.textContent === rampMessage) setStatus('');
   art = convert(frameOf(source, gifIndex), currentOptions());
   drawPreview();
   updateExportSize();
   if (recording) drawRecordingFrame(recording);
 
-  setStatus(`${source.label}, ${source.width}×${source.height} → ${art.columns}×${art.rows} characters`);
+  setText(info, `${source.label}, ${source.width}×${source.height} → ${art.columns}×${art.rows} characters`);
   if (source.kind === 'gif') frameInfo.textContent = `Frame ${gifIndex + 1} / ${source.frames.length}`;
   if (source.kind === 'video') {
     const { currentTime, duration } = source.video;
@@ -148,7 +170,8 @@ function schedule(): void {
 function drawPreview(): void {
   if (!art) return;
   const narrow = matchMedia('(max-width: 760px)').matches;
-  previewFontSize = fitFontSize(
+  const dpr = window.devicePixelRatio || 1;
+  const fitted = fitFontSize(
     art.columns,
     art.rows,
     cell,
@@ -158,9 +181,10 @@ function drawPreview(): void {
     },
     { min: 0.5, max: 24 },
   );
+  // Tall art on a phone would otherwise ask for a canvas the browser refuses.
+  previewFontSize = capFontSize(fitted, art.columns, art.rows, cell, dpr);
   const cssWidth = Math.floor(art.columns * cell.width * previewFontSize);
   const cssHeight = Math.floor(art.rows * cell.height * previewFontSize);
-  const dpr = window.devicePixelRatio || 1;
   preview.width = Math.max(1, Math.round(cssWidth * dpr));
   preview.height = Math.max(1, Math.round(cssHeight * dpr));
   preview.style.width = `${cssWidth}px`;
@@ -170,8 +194,18 @@ function drawPreview(): void {
   drawArt(ctx, art, style(previewFontSize, false));
 }
 
+/** Messages (saved, errors). Kept apart from the per-frame info line so playback doesn't wipe them. */
 function setStatus(text: string): void {
   status.textContent = text;
+}
+
+function setText(el: HTMLElement, text: string): void {
+  if (el.textContent !== text) el.textContent = text;
+}
+
+/** The cells an export draws: everything, or the square block when cropping. */
+function exportArt(layout: ReturnType<typeof exportLayout>): AsciiArt {
+  return sliceArt(art!, layout.region);
 }
 
 // ---- export ---------------------------------------------------------------
@@ -204,7 +238,7 @@ async function exportImage(): Promise<void> {
   canvas.height = layout.height;
   const ctx = canvas.getContext('2d');
   if (!ctx) return setStatus('Could not create a canvas that large.');
-  drawArt(ctx, art, style(layout.fontSize, transparent.checked && fmt.alpha), layout.offsetX, layout.offsetY);
+  drawArt(ctx, exportArt(layout), style(layout.fontSize, transparent.checked && fmt.alpha), layout.offsetX, layout.offsetY);
 
   const blob = await new Promise<Blob | null>((resolve) =>
     canvas.toBlob(resolve, fmt.mime, fmt.lossy ? Number(quality.value) : undefined),
@@ -272,7 +306,7 @@ function startRecording(): void {
 function drawRecordingFrame(rec: Recording): void {
   const layout = currentExportLayout();
   if (!art || !layout) return;
-  drawArt(rec.ctx, art, style(layout.fontSize, false), layout.offsetX, layout.offsetY);
+  drawArt(rec.ctx, exportArt(layout), style(layout.fontSize, false), layout.offsetX, layout.offsetY);
 }
 
 function stopRecording(): void {
@@ -292,6 +326,7 @@ function stopRecording(): void {
 function play(): void {
   if (!source || source.kind === 'still') return;
   playing = true;
+  const token = ++playToken;
   playButton.textContent = 'Pause';
   if (source.kind === 'gif') {
     scheduleGifFrame(source);
@@ -299,7 +334,7 @@ function play(): void {
     const { video } = source;
     void video.play();
     const step = (): void => {
-      if (!playing || source?.kind !== 'video' || source.video !== video) return;
+      if (token !== playToken || source?.kind !== 'video' || source.video !== video) return;
       refresh();
       next();
     };
@@ -331,6 +366,7 @@ function scheduleGifFrame(gif: Extract<Source, { kind: 'gif' }>, continuing = fa
 
 function pause(): void {
   playing = false;
+  playToken++;
   clearTimeout(gifTimer);
   if (source?.kind === 'video') source.video.pause();
   playButton.textContent = 'Play';
@@ -354,8 +390,9 @@ async function load(file: Blob, label: string): Promise<void> {
     playback.hidden = !animated;
     recordButton.hidden = !animated;
     frameInfo.textContent = '';
+    setStatus('');
     refresh();
-    if (animated) play();
+    if (animated && !matchMedia('(prefers-reduced-motion: reduce)').matches) play();
   } catch (error) {
     setStatus(error instanceof Error && error.message ? error.message : `Could not open ${label}.`);
   }

@@ -1,5 +1,6 @@
 import type { PixelData } from '../src/core/index.js';
-import { decodeGifFrames } from '../src/formats/gif.js';
+import { gifFrames } from '../src/formats/gif.js';
+import { checkPixels } from '../src/formats/limits.js';
 
 // Pixels are scaled down on load; the converter averages many pixels per
 // character anyway. Moving sources use a smaller cap to keep playback fast.
@@ -16,16 +17,16 @@ export async function openFile(file: Blob, label: string): Promise<Source> {
   const head = new Uint8Array(await file.slice(0, 6).arrayBuffer());
   const isGif = head[0] === 0x47 && head[1] === 0x49 && head[2] === 0x46;
   if (isGif) {
-    const frames = decodeGifFrames(new Uint8Array(await file.arrayBuffer()));
-    const { width, height } = frames[0]!;
-    if (frames.length === 1) return { kind: 'still', label, width, height, frame: scale(frames[0]!, MAX_STILL_SIDE) };
-    return {
-      kind: 'gif',
-      label,
-      width,
-      height,
-      frames: frames.map((f) => ({ ...scale(f, MAX_MOTION_SIDE), delay: f.delay })),
-    };
+    // Scale each frame as it is decoded so full-size frames don't pile up.
+    const frames: (PixelData & { delay: number })[] = [];
+    let first: PixelData | undefined;
+    for (const f of gifFrames(new Uint8Array(await file.arrayBuffer()))) {
+      first ??= f;
+      frames.push({ ...scale(f, MAX_MOTION_SIDE), delay: f.delay });
+    }
+    const { width, height } = first!;
+    if (frames.length === 1) return { kind: 'still', label, width, height, frame: scale(first!, MAX_STILL_SIDE) };
+    return { kind: 'gif', label, width, height, frames };
   }
   if (file.type.startsWith('video/')) return openVideo(file, label);
   try {
@@ -33,11 +34,15 @@ export async function openFile(file: Blob, label: string): Promise<Source> {
   } catch (error) {
     // Some video files arrive without a MIME type; try them as video.
     if (!file.type) return openVideo(file, label);
-    throw error;
+    if (error instanceof RangeError) throw error; // over the size limit
+    throw unreadable(label);
   }
 }
 
 async function openStill(file: Blob, label: string): Promise<Source> {
+  const header = new Uint8Array(await file.slice(0, 24).arrayBuffer());
+  const size = pngSize(header);
+  if (size) checkPixels(size.width, size.height);
   const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
   const { width, height } = bitmap;
   const frame = draw(bitmap, width, height, MAX_STILL_SIDE);
@@ -55,7 +60,7 @@ async function openVideo(file: Blob, label: string): Promise<Source> {
   try {
     await new Promise<void>((resolve, reject) => {
       video.addEventListener('loadeddata', () => resolve(), { once: true });
-      video.addEventListener('error', () => reject(new Error('This browser cannot play that video.')), { once: true });
+      video.addEventListener('error', () => reject(unreadable(label)), { once: true });
       video.src = url;
     });
   } catch (error) {
@@ -107,7 +112,22 @@ function scale(frame: PixelData, maxSide: number): PixelData {
   const canvas = document.createElement('canvas');
   canvas.width = frame.width;
   canvas.height = frame.height;
-  const data = Uint8ClampedArray.from(frame.data);
+  const data =
+    frame.data instanceof Uint8Array || frame.data instanceof Uint8ClampedArray
+      ? new Uint8ClampedArray(frame.data.buffer as ArrayBuffer, frame.data.byteOffset, frame.width * frame.height * 4)
+      : Uint8ClampedArray.from(frame.data);
   canvas.getContext('2d')!.putImageData(new ImageData(data, frame.width, frame.height), 0, 0);
   return draw(canvas, frame.width, frame.height, maxSide);
+}
+
+/** Width and height from a PNG header, so a tiny file claiming a huge size is refused before decoding. */
+function pngSize(bytes: Uint8Array): { width: number; height: number } | undefined {
+  const png = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  if (bytes.length < 24 || !png.every((b, i) => bytes[i] === b)) return undefined;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return { width: view.getUint32(16), height: view.getUint32(20) };
+}
+
+function unreadable(label: string): Error {
+  return new Error(`Can't open ${label}: it isn't an image or video this browser can read.`);
 }

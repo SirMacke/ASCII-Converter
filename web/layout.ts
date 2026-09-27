@@ -1,6 +1,8 @@
 // Pure sizing and format logic for the web page. No DOM access here so it
 // can be unit tested in Node.
 
+import type { AsciiArt } from '../src/core/index.js';
+
 /** Size of one character cell per 1px of font size (so in em units). */
 export interface CellMetrics {
   width: number;
@@ -65,6 +67,68 @@ export function parseSize(value: string): SizeChoice {
   throw new RangeError(`Unknown export size "${value}"`);
 }
 
+/**
+ * Largest canvas the preview may use, in device pixels. iOS Safari refuses
+ * canvases over 16.7 million pixels and Chrome over 32767 px on a side; a
+ * refused canvas shows nothing (or crashes the tab).
+ */
+export const MAX_CANVAS_AREA = 16_777_216;
+export const MAX_CANVAS_SIDE = 16_384;
+
+/**
+ * Shrink a font size, if needed, so a grid drawn at it fits a canvas the
+ * browser will accept at the given device pixel ratio.
+ */
+export function capFontSize(
+  fontSize: number,
+  columns: number,
+  rows: number,
+  cell: Pick<CellMetrics, 'width' | 'height'>,
+  dpr: number,
+): number {
+  const w = columns * cell.width * fontSize * dpr;
+  const h = rows * cell.height * fontSize * dpr;
+  const factor = Math.min(1, MAX_CANVAS_SIDE / w, MAX_CANVAS_SIDE / h, Math.sqrt(MAX_CANVAS_AREA / (w * h)));
+  return factor < 1 ? Math.floor(fontSize * factor * 100) / 100 : fontSize;
+}
+
+/** A block of cells: columns col0 .. col0 + columns - 1, rows likewise. */
+export interface CellRegion {
+  col0: number;
+  row0: number;
+  columns: number;
+  rows: number;
+}
+
+/**
+ * The centred block of whole cells that comes closest to a square, for
+ * cropped exports. Cropping whole cells keeps glyphs from being cut in half
+ * at the edges.
+ */
+export function squareCrop(columns: number, rows: number, cell: Pick<CellMetrics, 'width' | 'height'>): CellRegion {
+  const artW = columns * cell.width;
+  const artH = rows * cell.height;
+  if (artW > artH) {
+    const keep = Math.max(1, Math.min(columns, Math.round(artH / cell.width)));
+    return { col0: Math.floor((columns - keep) / 2), row0: 0, columns: keep, rows };
+  }
+  const keep = Math.max(1, Math.min(rows, Math.round(artW / cell.height)));
+  return { col0: 0, row0: Math.floor((rows - keep) / 2), columns, rows: keep };
+}
+
+/** Copy a block of cells out of converted art. */
+export function sliceArt(art: AsciiArt, region: CellRegion): AsciiArt {
+  if (region.col0 === 0 && region.row0 === 0 && region.columns === art.columns && region.rows === art.rows) return art;
+  const chars: string[] = [];
+  const colors = new Uint8Array(region.columns * region.rows * 3);
+  for (let r = 0; r < region.rows; r++) {
+    const from = (region.row0 + r) * art.columns + region.col0;
+    chars.push(...art.chars.slice(from, from + region.columns));
+    colors.set(art.colors.subarray(from * 3, (from + region.columns) * 3), r * region.columns * 3);
+  }
+  return { columns: region.columns, rows: region.rows, chars, colors };
+}
+
 /** none keeps the art's shape; pad and crop make a square (for avatars). */
 export type SquareMode = 'none' | 'pad' | 'crop';
 
@@ -86,23 +150,30 @@ export interface ExportLayout {
   width: number;
   height: number;
   fontSize: number;
-  /** Where the top-left of the grid goes. Negative when cropping. */
+  /** Where the top-left of the drawn cells goes. */
   offsetX: number;
   offsetY: number;
+  /** The cells to draw: all of them, or the square block for crop. */
+  region: CellRegion;
   /** True when the requested size had to be reduced to stay under maxSide. */
   limited: boolean;
 }
 
 /** Work out canvas size, font size and grid offset for an exported image. */
 export function exportLayout(input: ExportLayoutInput): ExportLayout {
-  const artW = input.columns * input.cell.width;
-  const artH = input.rows * input.cell.height;
+  const region =
+    input.square === 'crop'
+      ? squareCrop(input.columns, input.rows, input.cell)
+      : { col0: 0, row0: 0, columns: input.columns, rows: input.rows };
+  const artW = region.columns * input.cell.width;
+  const artH = region.rows * input.cell.height;
   const pad = 2 * input.padding;
 
   let boxW = artW + pad;
   let boxH = artH + pad;
-  if (input.square === 'pad') boxW = boxH = Math.max(artW, artH) + pad;
-  if (input.square === 'crop') boxW = boxH = Math.min(artW, artH) + pad;
+  // Cropping to whole cells leaves the block within one cell of square;
+  // centring it in a square box evens out the rest.
+  if (input.square !== 'none') boxW = boxH = Math.max(artW, artH) + pad;
 
   let fontSize = input.size.kind === 'scale' ? input.screenFontSize * input.size.factor : input.size.pixels / boxW;
   const maxSide = input.maxSide ?? 8192;
@@ -118,6 +189,7 @@ export function exportLayout(input: ExportLayoutInput): ExportLayout {
     fontSize,
     offsetX: (width - artW * fontSize) / 2,
     offsetY: (height - artH * fontSize) / 2,
+    region,
     limited,
   };
 }

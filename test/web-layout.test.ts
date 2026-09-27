@@ -1,5 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { FORMATS, exportLayout, fitFontSize, isExportFormat, parseSize, type ExportLayoutInput } from '../web/layout.js';
+import {
+  FORMATS,
+  MAX_CANVAS_AREA,
+  MAX_CANVAS_SIDE,
+  capFontSize,
+  exportLayout,
+  fitFontSize,
+  isExportFormat,
+  parseSize,
+  sliceArt,
+  squareCrop,
+  type ExportLayoutInput,
+} from '../web/layout.js';
 
 // A typical monospace cell: 0.6em wide, 1.2em tall.
 const cell = { width: 0.6, height: 1.2 };
@@ -98,13 +110,20 @@ describe('exportLayout', () => {
     expect(out.offsetY).toBeCloseTo((512 - 24 * (512 / 48)) / 2);
   });
 
-  it('crops to a square around the centre', () => {
-    const out = exportLayout({ ...base, size: { kind: 'width', pixels: 512 }, square: 'crop' });
+  it('crops to a square of whole cells around the centre', () => {
+    const out = exportLayout({ ...base, size: { kind: 'width', pixels: 512 }, square: 'crop', padding: 1 });
     expect([out.width, out.height]).toEqual([512, 512]);
-    // The 48em wide art is cut to 24em; the grid starts left of the canvas.
-    expect(out.fontSize).toBeCloseTo(512 / 24);
-    expect(out.offsetX).toBeCloseTo(-12 * (512 / 24));
-    expect(out.offsetY).toBeCloseTo(0);
+    // The 48em wide art is cut to its middle 40 columns (24em), plus 1em padding each side.
+    expect(out.region).toEqual({ col0: 20, row0: 0, columns: 40, rows: 20 });
+    expect(out.fontSize).toBeCloseTo(512 / 26);
+    // Same margin on every side.
+    expect(out.offsetX).toBeCloseTo(512 / 26);
+    expect(out.offsetY).toBeCloseTo(512 / 26);
+  });
+
+  it('draws every cell unless cropping', () => {
+    expect(exportLayout(base).region).toEqual({ col0: 0, row0: 0, columns: 80, rows: 20 });
+    expect(exportLayout({ ...base, square: 'pad' }).region).toEqual({ col0: 0, row0: 0, columns: 80, rows: 20 });
   });
 
   it('caps the canvas side and reports it', () => {
@@ -112,5 +131,44 @@ describe('exportLayout', () => {
     expect(out.width).toBe(4096);
     expect(out.height).toBe(2048);
     expect(out.limited).toBe(true);
+  });
+});
+
+describe('squareCrop and sliceArt', () => {
+  it('keeps the middle whole cells of wide and tall grids', () => {
+    // 100 x 10 cells = 60em x 12em: keep 20 columns (12em).
+    expect(squareCrop(100, 10, cell)).toEqual({ col0: 40, row0: 0, columns: 20, rows: 10 });
+    // 10 x 100 cells = 6em x 120em: keep 5 rows (6em).
+    expect(squareCrop(10, 100, cell)).toEqual({ col0: 0, row0: 47, columns: 10, rows: 5 });
+    expect(squareCrop(1, 1, cell)).toEqual({ col0: 0, row0: 0, columns: 1, rows: 1 });
+  });
+
+  it('copies characters and colours of the region', () => {
+    const art = {
+      columns: 3,
+      rows: 2,
+      chars: ['a', 'b', 'c', 'd', 'e', 'f'],
+      colors: Uint8Array.from({ length: 18 }, (_, i) => i),
+    };
+    const out = sliceArt(art, { col0: 1, row0: 0, columns: 2, rows: 2 });
+    expect(out.chars).toEqual(['b', 'c', 'e', 'f']);
+    expect(Array.from(out.colors)).toEqual([3, 4, 5, 6, 7, 8, 12, 13, 14, 15, 16, 17]);
+    expect(sliceArt(art, { col0: 0, row0: 0, columns: 3, rows: 2 })).toBe(art);
+  });
+});
+
+describe('capFontSize', () => {
+  it('leaves sizes that fit alone', () => {
+    expect(capFontSize(10, 100, 50, cell, 2)).toBe(10);
+  });
+
+  it('shrinks the font so the canvas stays under the browser limits', () => {
+    // 10 columns x 400 rows at 24px and 3x: 432 x 34560 device pixels.
+    const size = capFontSize(24, 10, 400, cell, 3);
+    const w = 10 * cell.width * size * 3;
+    const h = 400 * cell.height * size * 3;
+    expect(h).toBeLessThanOrEqual(MAX_CANVAS_SIDE);
+    expect(w * h).toBeLessThanOrEqual(MAX_CANVAS_AREA);
+    expect(size).toBeGreaterThan(10);
   });
 });
