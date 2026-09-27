@@ -1,55 +1,84 @@
+import '@fontsource/jetbrains-mono/latin-400.css';
 import { convert, toHtml, toText, type AsciiArt, type ConvertOptions } from '../src/core/index.js';
-import sampleUrl from '../examples/spheres.png';
+import orbitUrl from '../examples/orbit.gif';
+import spheresUrl from '../examples/spheres.png';
+import { drawArt, measureCell, type DrawStyle } from './draw.js';
+import { FORMATS, exportLayout, fitFontSize, isExportFormat, parseSize, type CellMetrics, type SquareMode } from './layout.js';
+import { closeSource, frameOf, openFile, type Source } from './media.js';
 
-// Images are scaled down to this many pixels on the long side once, on load.
-// The converter averages pixels per character, so more detail is wasted.
-const MAX_SIDE = 1200;
+const FONTS: Record<string, string> = {
+  jetbrains: '"JetBrains Mono", monospace',
+  system: 'ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace',
+  courier: '"Courier New", Courier, monospace',
+};
+const THEMES = {
+  dark: { bg: '#0c0c0c', fg: '#d8d8d8' },
+  light: { bg: '#ffffff', fg: '#1a1a1a' },
+};
+const SAMPLES: Record<string, { url: string; name: string }> = {
+  spheres: { url: spheresUrl, name: 'spheres.png' },
+  orbit: { url: orbitUrl, name: 'orbit.gif' },
+};
+/** Margin around exported images, in multiples of the font size. */
+const EXPORT_PADDING = 1;
+/** Inner padding of the stage, in CSS pixels. */
+const STAGE_PADDING = 12;
 
-const byId = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
-const input = <T extends HTMLElement = HTMLInputElement>(id: string): T => byId<T>(id);
+const byId = <T extends HTMLElement = HTMLInputElement>(id: string): T => document.getElementById(id) as T;
 
 const controls = byId<HTMLFormElement>('controls');
-const fileInput = input('file');
-const width = input('width');
-const ramp = input<HTMLSelectElement>('ramp');
-const customRamp = input('custom-ramp');
-const customRampLabel = byId('custom-ramp-label');
-const brightness = input('brightness');
-const contrast = input('contrast');
-const gamma = input('gamma');
-const invert = input('invert');
-const color = input('color');
-const dither = input('dither');
+const fileInput = byId('file');
+const sample = byId<HTMLSelectElement>('sample');
+const playback = byId('playback');
+const playButton = byId<HTMLButtonElement>('play');
+const frameInfo = byId('frame-info');
+const width = byId('width');
+const ramp = byId<HTMLSelectElement>('ramp');
+const customRamp = byId('custom-ramp');
+const brightness = byId('brightness');
+const contrast = byId('contrast');
+const gamma = byId('gamma');
+const invert = byId('invert');
+const color = byId('color');
+const dither = byId('dither');
+const font = byId<HTMLSelectElement>('font');
+const bg = byId('bg');
+const fg = byId('fg');
+const format = byId<HTMLSelectElement>('format');
+const size = byId<HTMLSelectElement>('size');
+const square = byId<HTMLSelectElement>('square');
+const transparent = byId('transparent');
+const quality = byId('quality');
+const exportSize = byId('export-size');
+const recordButton = byId<HTMLButtonElement>('record');
 const stage = byId('stage');
-const output = byId('output');
+const preview = byId<HTMLCanvasElement>('preview');
 const status = byId('status');
 
-let pixels: ImageData | undefined;
+let source: Source | undefined;
 let art: AsciiArt | undefined;
+let cell: CellMetrics = { width: 0.6, height: 1.2, ascent: 0.95 };
+let previewFontSize = 10;
 let baseName = 'ascii-art';
-let sourceLabel = '';
 let pending = 0;
+let playing = false;
+let gifIndex = 0;
+let gifTimer = 0;
+let gifDeadline = 0;
+let coloursTouched = false;
+let loadToken = 0;
 
-async function load(blob: Blob, label: string): Promise<void> {
-  try {
-    const bitmap = await createImageBitmap(blob, { imageOrientation: 'from-image' });
-    const scale = Math.min(1, MAX_SIDE / Math.max(bitmap.width, bitmap.height));
-    const w = Math.max(1, Math.round(bitmap.width * scale));
-    const h = Math.max(1, Math.round(bitmap.height * scale));
-    const canvas = document.createElement('canvas');
-    canvas.width = w;
-    canvas.height = h;
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    if (!ctx) throw new Error('Canvas 2D is not available');
-    ctx.drawImage(bitmap, 0, 0, w, h);
-    pixels = ctx.getImageData(0, 0, w, h);
-    sourceLabel = `${label}, ${bitmap.width}×${bitmap.height}`;
-    baseName = label.replace(/\.[^.]+$/, '') || 'ascii-art';
-    bitmap.close();
-    schedule();
-  } catch {
-    setStatus(`Could not read ${label} as an image.`);
-  }
+interface Recording {
+  recorder: MediaRecorder;
+  ctx: CanvasRenderingContext2D;
+  framesLeft: number;
+}
+let recording: Recording | undefined;
+
+// ---- conversion and preview ---------------------------------------------
+
+function fontFamily(): string {
+  return FONTS[font.value] ?? FONTS.system!;
 }
 
 function currentOptions(): ConvertOptions {
@@ -61,81 +90,324 @@ function currentOptions(): ConvertOptions {
     gamma: Number(gamma.value),
     invert: invert.checked,
     dither: dither.checked,
+    // The measured cell of the chosen font, so proportions match the output.
     charAspect: cell.height / cell.width,
   };
 }
 
-function render(): void {
+function style(fontSize: number, allowTransparent: boolean): DrawStyle {
+  return {
+    fontFamily: fontFamily(),
+    fontSize,
+    cell,
+    foreground: fg.value,
+    background: allowTransparent ? null : bg.value,
+    color: color.checked,
+  };
+}
+
+/** Convert the current frame and redraw everything that depends on it. */
+function refresh(): void {
   pending = 0;
-  for (const el of [width, brightness, contrast, gamma]) byId(`${el.id}-value`).textContent = el.value;
-  customRampLabel.hidden = ramp.value !== 'custom';
-  stage.classList.toggle('light', invert.checked);
-  if (!pixels) return;
+  for (const el of [width, brightness, contrast, gamma, quality]) byId(`${el.id}-value`).textContent = el.value;
+  byId('custom-ramp-label').hidden = ramp.value !== 'custom';
+  const fmt = FORMATS[isExportFormat(format.value) ? format.value : 'png'];
+  byId('quality-label').hidden = !fmt.lossy;
+  transparent.disabled = !fmt.alpha;
+  stage.style.background = bg.value;
+  if (!source) return;
 
   if (ramp.value === 'custom' && Array.from(customRamp.value).length < 2) {
     setStatus('A custom ramp needs at least 2 characters.');
     return;
   }
-  art = convert(pixels, currentOptions());
-  output.innerHTML = toHtml(art, { color: color.checked }).replace(/^<pre[^>]*>|<\/pre>$/g, '');
-  fitFont();
-  setStatus(`${sourceLabel} → ${art.columns}×${art.rows} characters`);
+  art = convert(frameOf(source, gifIndex), currentOptions());
+  drawPreview();
+  updateExportSize();
+  if (recording) drawRecordingFrame(recording);
+
+  setStatus(`${source.label}, ${source.width}×${source.height} → ${art.columns}×${art.rows} characters`);
+  if (source.kind === 'gif') frameInfo.textContent = `Frame ${gifIndex + 1} / ${source.frames.length}`;
+  if (source.kind === 'video') {
+    const { currentTime, duration } = source.video;
+    // Recorded WebM files often have no duration in their header.
+    frameInfo.textContent = Number.isFinite(duration)
+      ? `${currentTime.toFixed(1)} / ${duration.toFixed(1)} s`
+      : `${currentTime.toFixed(1)} s`;
+  }
 }
 
 function schedule(): void {
-  if (!pending) pending = requestAnimationFrame(render);
+  if (!pending) pending = requestAnimationFrame(refresh);
 }
 
-// Measure the monospace cell so the aspect ratio matches what is on screen,
-// then scale the font so the whole picture fits the stage width.
-const cell = measureCell();
-
-function measureCell(): { width: number; height: number } {
-  const probe = document.createElement('pre');
-  probe.className = 'ascii-art';
-  probe.style.cssText = 'position:absolute;visibility:hidden;padding:0;margin:0;font-size:100px';
-  probe.textContent = Array(10).fill('M'.repeat(10)).join('\n');
-  document.body.append(probe);
-  const rect = probe.getBoundingClientRect();
-  probe.remove();
-  return { width: rect.width / 1000, height: rect.height / 1000 };
-}
-
-function fitFont(): void {
+/**
+ * Size the preview so the whole grid fits the stage. On narrow screens only
+ * the width is fitted and the page scrolls.
+ */
+function drawPreview(): void {
   if (!art) return;
-  const available = stage.clientWidth - 32;
-  const size = Math.min(16, Math.max(3, available / (art.columns * cell.width)));
-  output.style.fontSize = `${size.toFixed(2)}px`;
+  const narrow = matchMedia('(max-width: 760px)').matches;
+  previewFontSize = fitFontSize(
+    art.columns,
+    art.rows,
+    cell,
+    {
+      width: stage.clientWidth - 2 * STAGE_PADDING,
+      height: narrow ? undefined : stage.clientHeight - 2 * STAGE_PADDING,
+    },
+    { min: 0.5, max: 24 },
+  );
+  const cssWidth = Math.floor(art.columns * cell.width * previewFontSize);
+  const cssHeight = Math.floor(art.rows * cell.height * previewFontSize);
+  const dpr = window.devicePixelRatio || 1;
+  preview.width = Math.max(1, Math.round(cssWidth * dpr));
+  preview.height = Math.max(1, Math.round(cssHeight * dpr));
+  preview.style.width = `${cssWidth}px`;
+  preview.style.height = `${cssHeight}px`;
+  const ctx = preview.getContext('2d')!;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  drawArt(ctx, art, style(previewFontSize, false));
 }
 
 function setStatus(text: string): void {
   status.textContent = text;
 }
 
-function download(contents: string, type: string, ext: string): void {
-  const url = URL.createObjectURL(new Blob([contents], { type }));
+// ---- export ---------------------------------------------------------------
+
+function currentExportLayout() {
+  if (!art) return undefined;
+  return exportLayout({
+    columns: art.columns,
+    rows: art.rows,
+    cell,
+    size: parseSize(size.value),
+    screenFontSize: previewFontSize,
+    square: square.value as SquareMode,
+    padding: EXPORT_PADDING,
+  });
+}
+
+function updateExportSize(): void {
+  const layout = currentExportLayout();
+  exportSize.textContent = layout ? `${layout.width} × ${layout.height} px${layout.limited ? ' (max)' : ''}` : '';
+}
+
+async function exportImage(): Promise<void> {
+  const layout = currentExportLayout();
+  if (!art || !layout) return;
+  const key = isExportFormat(format.value) ? format.value : 'png';
+  const fmt = FORMATS[key];
+  const canvas = document.createElement('canvas');
+  canvas.width = layout.width;
+  canvas.height = layout.height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return setStatus('Could not create a canvas that large.');
+  drawArt(ctx, art, style(layout.fontSize, transparent.checked && fmt.alpha), layout.offsetX, layout.offsetY);
+
+  const blob = await new Promise<Blob | null>((resolve) =>
+    canvas.toBlob(resolve, fmt.mime, fmt.lossy ? Number(quality.value) : undefined),
+  );
+  if (!blob) return setStatus('Export failed. Try a smaller size.');
+  // Browsers that can't encode a format silently fall back to PNG.
+  const ext = blob.type === fmt.mime ? fmt.ext : 'png';
+  save(blob, `${baseName}.${ext}`);
+  setStatus(
+    blob.type === fmt.mime
+      ? `Saved ${baseName}.${ext}, ${layout.width}×${layout.height}.`
+      : `This browser can't encode ${key.toUpperCase()}; saved a PNG instead.`,
+  );
+}
+
+function save(blob: Blob, name: string): void {
+  const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `${baseName}.${ext}`;
+  a.download = name;
   a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
-async function loadSample(): Promise<void> {
-  const res = await fetch(sampleUrl);
-  await load(await res.blob(), 'spheres.png');
+// ---- recording animations to WebM ---------------------------------------
+
+function startRecording(): void {
+  if (!source || source.kind === 'still' || !art) return;
+  if (typeof MediaRecorder === 'undefined') return setStatus('This browser cannot record video.');
+  const layout = currentExportLayout()!;
+  const canvas = document.createElement('canvas');
+  // Video encoders want even dimensions.
+  canvas.width = layout.width + (layout.width % 2);
+  canvas.height = layout.height + (layout.height % 2);
+  const ctx = canvas.getContext('2d')!;
+  const mimeType = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find((t) =>
+    MediaRecorder.isTypeSupported(t),
+  );
+  const recorder = new MediaRecorder(canvas.captureStream(), mimeType ? { mimeType, videoBitsPerSecond: 8_000_000 } : {});
+  const chunks: Blob[] = [];
+  recorder.ondataavailable = (e) => chunks.push(e.data);
+  recorder.onstop = () => {
+    save(new Blob(chunks, { type: 'video/webm' }), `${baseName}.webm`);
+    setStatus(`Saved ${baseName}.webm, ${canvas.width}×${canvas.height}.`);
+  };
+
+  // Record exactly one pass from the start.
+  pause();
+  if (source.kind === 'gif') {
+    gifIndex = 0;
+    recording = { recorder, ctx, framesLeft: source.frames.length - 1 };
+  } else {
+    const { video } = source;
+    recording = { recorder, ctx, framesLeft: Infinity };
+    video.loop = false;
+    video.currentTime = 0;
+    video.addEventListener('ended', stopRecording, { once: true });
+  }
+  recorder.start();
+  recordButton.textContent = 'Stop recording';
+  refresh();
+  play();
 }
 
-controls.addEventListener('input', schedule);
+function drawRecordingFrame(rec: Recording): void {
+  const layout = currentExportLayout();
+  if (!art || !layout) return;
+  drawArt(rec.ctx, art, style(layout.fontSize, false), layout.offsetX, layout.offsetY);
+}
+
+function stopRecording(): void {
+  if (!recording) return;
+  recording.recorder.stop();
+  recording = undefined;
+  recordButton.textContent = 'Record WebM';
+  if (source?.kind === 'video') {
+    source.video.removeEventListener('ended', stopRecording);
+    source.video.loop = true;
+    if (source.video.ended) play();
+  }
+}
+
+// ---- playback -------------------------------------------------------------
+
+function play(): void {
+  if (!source || source.kind === 'still') return;
+  playing = true;
+  playButton.textContent = 'Pause';
+  if (source.kind === 'gif') {
+    scheduleGifFrame(source);
+  } else {
+    const { video } = source;
+    void video.play();
+    const step = (): void => {
+      if (!playing || source?.kind !== 'video' || source.video !== video) return;
+      refresh();
+      next();
+    };
+    const next = (): void => {
+      if ('requestVideoFrameCallback' in video) video.requestVideoFrameCallback(step);
+      else requestAnimationFrame(step);
+    };
+    next();
+  }
+}
+
+function scheduleGifFrame(gif: Extract<Source, { kind: 'gif' }>, continuing = false): void {
+  clearTimeout(gifTimer);
+  // Aim at absolute deadlines so conversion time doesn't stretch the delays.
+  const now = performance.now();
+  if (!continuing || gifDeadline < now - 1000) gifDeadline = now;
+  gifDeadline += gif.frames[gifIndex]!.delay;
+  gifTimer = window.setTimeout(() => {
+    if (!playing || source !== gif) return;
+    gifIndex = (gifIndex + 1) % gif.frames.length;
+    refresh();
+    if (recording && --recording.framesLeft === 0) {
+      // Keep the last frame on screen for its full delay, then stop.
+      window.setTimeout(stopRecording, gif.frames[gifIndex]!.delay);
+    }
+    scheduleGifFrame(gif, true);
+  }, Math.max(0, gifDeadline - now));
+}
+
+function pause(): void {
+  playing = false;
+  clearTimeout(gifTimer);
+  if (source?.kind === 'video') source.video.pause();
+  playButton.textContent = 'Play';
+}
+
+// ---- loading ----------------------------------------------------------------
+
+async function load(file: Blob, label: string): Promise<void> {
+  const token = ++loadToken;
+  setStatus(`Loading ${label}…`);
+  try {
+    const next = await openFile(file, label);
+    if (token !== loadToken) return closeSource(next);
+    stopRecording();
+    pause();
+    closeSource(source);
+    source = next;
+    gifIndex = 0;
+    baseName = label.replace(/\.[^.]+$/, '') || 'ascii-art';
+    const animated = source.kind !== 'still';
+    playback.hidden = !animated;
+    recordButton.hidden = !animated;
+    frameInfo.textContent = '';
+    refresh();
+    if (animated) play();
+  } catch (error) {
+    setStatus(error instanceof Error && error.message ? error.message : `Could not open ${label}.`);
+  }
+}
+
+async function loadSample(key: string): Promise<void> {
+  const item = SAMPLES[key];
+  if (!item) return;
+  const res = await fetch(item.url);
+  await load(await res.blob(), item.name);
+}
+
+async function applyFont(): Promise<void> {
+  const family = fontFamily();
+  try {
+    await document.fonts.load(`16px ${family}`);
+  } catch {
+    // Fall through: measuring will use whatever font is available.
+  }
+  cell = measureCell(family);
+  refresh();
+}
+
+// ---- events ---------------------------------------------------------------
+
+controls.addEventListener('input', (e) => {
+  const target = e.target as HTMLElement;
+  if (target === bg || target === fg) coloursTouched = true;
+  if (target === invert && !coloursTouched) {
+    const theme = invert.checked ? THEMES.light : THEMES.dark;
+    bg.value = theme.bg;
+    fg.value = theme.fg;
+  }
+  if (target === font) return void applyFont();
+  if (target === sample || target === fileInput) return;
+  schedule();
+});
 controls.addEventListener('submit', (e) => e.preventDefault());
-new ResizeObserver(fitFont).observe(stage);
+new ResizeObserver(() => schedule()).observe(stage);
 
 fileInput.addEventListener('change', () => {
   const file = fileInput.files?.[0];
   if (file) void load(file, file.name);
   fileInput.value = '';
 });
-byId('sample').addEventListener('click', () => void loadSample());
+sample.addEventListener('change', () => {
+  void loadSample(sample.value);
+  sample.value = '';
+});
+playButton.addEventListener('click', () => (playing ? pause() : play()));
+recordButton.addEventListener('click', () => (recording ? stopRecording() : startRecording()));
+byId('export').addEventListener('click', () => void exportImage());
 
 byId('copy').addEventListener('click', async () => {
   if (!art) return;
@@ -143,16 +415,16 @@ byId('copy').addEventListener('click', async () => {
     await navigator.clipboard.writeText(toText(art));
     setStatus('Copied to clipboard.');
   } catch {
-    setStatus('Copy failed. Select the text and copy it manually.');
+    setStatus('Copy failed. Download the .txt instead.');
   }
 });
 byId('download-txt').addEventListener('click', () => {
-  if (art) download(`${toText(art)}\n`, 'text/plain;charset=utf-8', 'txt');
+  if (art) save(new Blob([`${toText(art)}\n`], { type: 'text/plain;charset=utf-8' }), `${baseName}.txt`);
 });
 byId('download-html').addEventListener('click', () => {
   if (!art) return;
   const page = toHtml(art, { color: color.checked, standalone: true, theme: invert.checked ? 'light' : 'dark', title: baseName });
-  download(page, 'text/html;charset=utf-8', 'html');
+  save(new Blob([page], { type: 'text/html;charset=utf-8' }), `${baseName}.html`);
 });
 
 // Drag and drop anywhere on the page, or paste an image.
@@ -170,9 +442,9 @@ document.addEventListener('drop', (e) => {
   if (file) void load(file, file.name);
 });
 document.addEventListener('paste', (e) => {
-  const file = Array.from(e.clipboardData?.files ?? []).find((f) => f.type.startsWith('image/'));
+  const file = Array.from(e.clipboardData?.files ?? []).find((f) => /^(image|video)\//.test(f.type));
   if (file) void load(file, file.name || 'pasted image');
 });
 
-render();
-void loadSample();
+await applyFont();
+await loadSample('spheres');
