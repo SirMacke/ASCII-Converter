@@ -38,13 +38,13 @@ The image above is [`examples/spheres.png`](examples/spheres.png) exported from 
 
 `web/` contains a single static page. Open an image, animated GIF or video, or drop or paste one onto the page. Conversion runs in your browser and nothing is uploaded.
 
-- **Preview.** The whole picture always fits the window on a desktop screen: the font size follows the available width and height and updates when you resize the window or change an option. On phones the preview fits the width and the page scrolls.
+- **Preview.** The whole picture always fits the window on a desktop screen: the font size follows the available width and height and updates when you resize the window or change an option. On phones the preview fits the width and the page scrolls. The page converts to at most 400 rows, so a very tall image gets fewer columns than the width slider says; the line under the controls shows the actual size.
 - **Options.** Width, character ramp (preset or your own characters), brightness, contrast, gamma, invert, colour, dither, font, and background and text colours.
-- **Image export.** PNG, JPEG or WebP. Size is 1×, 2× or 4× the preview, or exactly 512, 1024, 2048 or 4096 px wide. The label next to the button shows the resulting pixel size. Choose "Square, padded" or "Square, cropped" for avatars. PNG and WebP can have a transparent background. JPEG and WebP have a quality slider. A browser that can't encode WebP saves a PNG instead and says so.
-- **GIFs and video.** Animated GIFs play with their own frame delays. Video files play as live ASCII (muted, looping). Play/pause is under the file buttons. "Download image" saves the current frame. "Record WebM" saves one pass of the animation at the export size.
+- **Image export.** PNG, JPEG or WebP. Size is 1×, 2× or 4× the preview, or exactly 512, 1024, 2048 or 4096 px wide. The label next to the button shows the resulting pixel size. Choose "Square, padded" or "Square, cropped" for avatars; cropping keeps the middle whole characters, so none are cut in half at the edges. PNG and WebP can have a transparent background. JPEG and WebP have a quality slider. A browser that can't encode WebP saves a PNG instead and says so.
+- **GIFs and video.** Animated GIFs play with their own frame delays. Video files play as live ASCII (muted, looping). With "reduce motion" turned on in your system settings, nothing starts playing on its own. Play/pause is under the file buttons. "Download image" saves the current frame. "Record WebM" saves one pass of the animation at the export size.
 - **Text.** Copy the text, or download it as `.txt` or as an `.html` page.
 
-The preview and the export use the same canvas renderer. The character cell is measured from the chosen font, so the exported image has the same proportions as the preview. The shade characters `░▒▓█` are drawn as filled cells, so they tile without gaps in any font. JetBrains Mono (SIL Open Font License 1.1) is bundled into the page; "System monospace" and "Courier New" use fonts already on your machine.
+The preview and the export use the same canvas renderer. The character cell is measured from the chosen font, so the exported image has the same proportions as the preview. The shade characters `░▒▓█` are drawn as filled cells, so they tile without gaps in any font. JetBrains Mono (SIL Open Font License 1.1) is bundled into the page, and its licence is published next to it as `JetBrainsMono-OFL.txt`; "System monospace" and "Courier New" use fonts already on your machine. Images over 100 megapixels are refused.
 
 ```sh
 npm install
@@ -75,6 +75,7 @@ ascii-converter logo.png --invert --ramp blocks      # for a light terminal, usi
 ascii-converter photo.jpg --out photo.html --color   # a standalone web page
 ascii-converter photo.jpg --out photo.txt            # plain text
 ascii-converter dance.gif --animate --color          # play a GIF in place, Ctrl+C to stop
+ascii-converter photo.jpg -b -0.2 --contrast 1.3     # negative values work after an option
 curl -s https://example.com/cat.png | ascii-converter -
 ```
 
@@ -96,8 +97,8 @@ The CLI writes text, ANSI or HTML. It can't write PNG/JPEG images: rendering gly
 | `-g, --gamma <n>` | `1` | Values above 1 brighten mid-tones, below 1 darken them. |
 | `--char-aspect <n>` | `2` | Height of a character cell divided by its width. Most terminal fonts are close to 2. |
 | `-a, --animate` | off | Play every frame of an animated GIF. The height is capped to the terminal so frames redraw in place. |
-| `--loops <n>` | forever | With `--animate`, stop after `n` loops. |
-| `-o, --out <file>` | stdout | `.html` or `.htm` writes a web page. Any other extension writes text (with ANSI codes if `--color` is on). |
+| `--loops <n>` | forever in a terminal, once when piped | With `--animate`, stop after `n` loops. |
+| `-o, --out <file>` | stdout | `.html` or `.htm` writes a web page. Any other extension writes text (with ANSI codes if `--color` is on). Image file names (`.png`, `.jpg` and so on) and the input file itself are refused, so a typo can't overwrite a picture with text. Other existing files are overwritten. |
 
 Ramp presets:
 
@@ -108,7 +109,9 @@ Ramp presets:
 | `blocks` | `` ░▒▓█`` |
 | `minimal` | `` .:#`` |
 
-Exit codes: `0` on success, `1` if the image can't be read or decoded, `2` for invalid arguments.
+Exit codes: `0` on success, `1` if the image can't be read or decoded, `2` for invalid arguments, `130` when an animation is stopped with Ctrl+C.
+
+**Limits.** Images over 100 megapixels are refused before decoding (the size is read from the file header), so a small file that claims a huge size can't exhaust memory. Output is capped at 10 million characters.
 
 **Formats.** JPEG, PNG and GIF are decoded with pure-JavaScript libraries ([jpeg-js](https://github.com/jpeg-js/jpeg-js), [pngjs](https://github.com/pngjs/pngjs), [omggif](https://github.com/deanm/omggif)), so installing needs no compiler or native binaries. The format is detected from the file contents, not the extension. JPEG EXIF orientation is applied, so phone photos come out upright. WebP, BMP and TIFF are rejected with an error; convert them to PNG first. (The web page uses the browser's decoders and accepts anything the browser can show.)
 
@@ -167,14 +170,15 @@ Options, with the CLI flag they correspond to:
 | `dither` | boolean | `false` | `--dither` |
 | `charAspect` | number above 0 | `2` | `--char-aspect` |
 
-Invalid options throw a `RangeError` or `TypeError` that names the option.
+Invalid options throw a `RangeError` or `TypeError` that names the option. `convert` also throws a `RangeError` if the grid would have more than 10 million characters.
 
 From `@sirmacke/ascii-converter/node`:
 
-- `readImage(path)` reads and decodes a JPEG, PNG or GIF (first frame).
-- `decodeImage(bytes)` does the same for a `Uint8Array` or `Buffer`.
-- `decodeFrames(bytes)` returns every GIF frame, composited, with its `delay` in milliseconds.
+- `readImage(path, { maxPixels }?)` reads and decodes a JPEG, PNG or GIF (first frame).
+- `decodeImage(bytes, { maxPixels }?)` does the same for a `Uint8Array` or `Buffer`.
+- `decodeFrames(bytes, { firstOnly, maxPixels }?)` returns every GIF frame, composited, with its `delay` in milliseconds.
 - `detectFormat(bytes)` returns `'jpeg'`, `'png'`, `'gif'`, `'webp'`, `'bmp'`, `'tiff'` or `undefined`.
+- `MAX_PIXELS` is the default size limit, 100,000,000 pixels. Larger images throw a `RangeError` before any pixels are decoded. Corrupt files throw an `Error` starting with `Could not decode PNG:` (or JPEG, GIF).
 
 ## Development
 
@@ -188,7 +192,7 @@ npm run examples     # regenerate examples/spheres.png and examples/orbit.gif
 node dist/cli/bin.js examples/orbit.gif --animate --color
 ```
 
-`npm run check:web` tests the built page in headless Chrome. Start `npm run build:web && npm run preview:web -- --port 4173` first, and set `CHROME` if Chrome isn't installed in its usual place. It checks that the page doesn't scroll at 1920×1080 and 1366×768 with a large image. It also checks that exported files have the chosen format and pixel size, that GIFs play at their frame delays, and that a recorded WebM plays back as video. Add `--readme` to re-export `examples/spheres-ascii.png`.
+`npm run check:web` tests the built page in headless Chrome. Start `npm run build:web && npm run preview:web -- --port 4173` first, and set `CHROME` if Chrome isn't installed in its usual place. It checks that the page doesn't scroll at 1920×1080, 1440×900 and 1366×768 with large, tiny, very wide and very tall images, and that a tall image stays within the browser's canvas limits on a phone. It also checks keyboard access to the file picker, that exported files have the chosen format and pixel size, that square crops have clean margins, that GIFs play at their frame delays, that messages survive playback, and that a recorded WebM plays back as video. Add `--readme` to re-export `examples/spheres-ascii.png`.
 
 ```text
 src/core/      conversion, ramps and renderers (no I/O, browser-safe)
