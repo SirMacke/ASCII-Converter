@@ -234,6 +234,28 @@ input[type='color'] {
   display: block;
 }
 
+.peek-hint {
+  margin: 0;
+  font-size: 0.9em;
+}
+
+kbd {
+  font: inherit;
+  color: var(--text);
+  padding: 0 5px;
+  border: 1px solid #555;
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: #222;
+}
+
+/* No keyboard to hold O on touch-only devices. */
+@media (hover: none) and (pointer: coarse) {
+  .peek-hint {
+    display: none;
+  }
+}
+
 /* Before/after compare: the original lies exactly over the preview. */
 #compare-box {
   position: relative;
