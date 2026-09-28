@@ -1,8 +1,10 @@
 # ASCII Converter
 
-Turns images, GIFs and videos into ASCII art. It comes in three parts that share one conversion engine:
+Turns images, GIFs and videos into ASCII art. Try it in your browser: **https://sirmacke.github.io/ASCII-Converter/**
 
-- a web page that converts in the browser and exports the result as a PNG, JPEG or WebP image
+It comes in three parts that share one conversion engine:
+
+- a [web page](https://sirmacke.github.io/ASCII-Converter/) that converts in the browser and exports the result as a PNG, JPEG or WebP image
 - a command-line tool, `ascii-converter`, for JPEG, PNG and GIF files
 - a small TypeScript library with no I/O, so it runs in Node and in browsers
 
@@ -36,11 +38,11 @@ The image above is [`examples/spheres.png`](examples/spheres.png) exported from 
 
 ## Web page
 
-`web/` contains a single static page. Open an image, animated GIF or video, or drop or paste one onto the page. Conversion runs in your browser and nothing is uploaded.
+Live at **https://sirmacke.github.io/ASCII-Converter/**, built from `web/`: a single static page. Open an image, animated GIF or video, or drop or paste one onto the page. Conversion runs in your browser and nothing is uploaded.
 
 - **Preview.** The whole picture always fits the window on a desktop screen: the font size follows the available width and height and updates when you resize the window or change an option. On phones the preview fits the width and the page scrolls. The page converts to at most 400 rows, so a very tall image gets fewer columns than the width slider says; the line under the controls shows the actual size.
 - **Options.** Width, character ramp (preset or your own characters), brightness, contrast, gamma, invert, colour, dither, font, and background and text colours.
-- **Image export.** PNG, JPEG or WebP. Size is 1×, 2× or 4× the preview, or exactly 512, 1024, 2048 or 4096 px wide. The label next to the button shows the resulting pixel size. Choose "Square, padded" or "Square, cropped" for avatars; cropping keeps the middle whole characters, so none are cut in half at the edges. PNG and WebP can have a transparent background. JPEG and WebP have a quality slider. A browser that can't encode WebP saves a PNG instead and says so.
+- **Image export.** PNG, JPEG or WebP. Size is 1×, 2× or 4× the preview, or exactly 512, 1024, 2048 or 4096 px wide. The label next to the button shows the resulting pixel size. Choose "Square, padded" or "Square, cropped" for avatars; cropping keeps the middle whole characters, so none are cut in half at the edges. PNG and WebP can have a transparent background. JPEG and WebP have a quality slider. A browser that can't encode WebP saves a PNG instead and says so. If the chosen size is larger than the browser can draw (iPhone and iPad Safari stop at 16.7 megapixels), the image is scaled down to the largest size that fits, keeping its shape, and the size label says so, for example "5503 × 4161 → 4710 × 3561 px, reduced to fit this browser".
 - **GIFs and video.** Animated GIFs play with their own frame delays. Video files play as live ASCII (muted, looping). With "reduce motion" turned on in your system settings, nothing starts playing on its own. Play/pause is under the file buttons. "Download image" saves the current frame. "Record WebM" saves one pass of the animation at the export size.
 - **Text.** Copy the text, or download it as `.txt` or as an `.html` page.
 
@@ -51,6 +53,8 @@ npm install
 npm run dev:web      # http://localhost:5173/
 npm run build:web    # static files in web/dist with relative paths, host anywhere
 ```
+
+Every push to `master` runs the tests, builds the page and deploys `web/dist` to GitHub Pages ([`.github/workflows/pages.yml`](.github/workflows/pages.yml)). The workflow can also be started by hand from the Actions tab. It needs Settings → Pages → Source set to "GitHub Actions" once.
 
 ## Command line
 
@@ -123,7 +127,7 @@ Exit codes: `0` on success, `1` if the image can't be read or decoded, `2` for i
 npm install @sirmacke/ascii-converter
 ```
 
-The main entry point is pure: it takes RGBA pixels and returns text. It has no dependencies and does no I/O. Decoding image files lives in the separate `/node` entry point.
+The main entry point is pure: it takes RGBA pixels and returns text. It has no dependencies and does no I/O. Decoding image files lives in the separate `/node` entry point. Both entry points ship type declarations that resolve under TypeScript's `moduleResolution` node10, node16, nodenext and bundler.
 
 ```js
 import { asciify } from '@sirmacke/ascii-converter';
@@ -192,7 +196,9 @@ npm run examples     # regenerate examples/spheres.png and examples/orbit.gif
 node dist/cli/bin.js examples/orbit.gif --animate --color
 ```
 
-`npm run check:web` builds the page, serves it on port 4173 and tests it in headless Chrome. Set `CHROME` if Chrome isn't installed in its usual place. It checks that the page doesn't scroll at 1920×1080, 1440×900 and 1366×768 with large, tiny, very wide and very tall images, and that a tall image stays within the browser's canvas limits on a phone. It also checks keyboard access to the file picker, that exported files have the chosen format and pixel size, that square crops have clean margins, that GIFs play at their frame delays, that messages survive playback, and that a recorded WebM plays back as video. Add `-- --readme` to re-export `examples/spheres-ascii.png`.
+`npm run check:web` builds the page, serves it on port 4173 and tests it in headless Chrome. Set `CHROME` if Chrome isn't installed in its usual place. It checks that the page doesn't scroll at 1920×1080, 1440×900 and 1366×768 with large, tiny, very wide and very tall images, and that a tall image stays within the browser's canvas limits on a phone. It also checks keyboard access to the file picker, that exported files have the chosen format and pixel size, that square crops have clean margins, that GIFs play at their frame delays, that messages survive playback, and that a recorded WebM plays back as video. Posing as an iPhone, it checks that a 4× export is reduced to fit iOS Safari's canvas limit. Add `-- --pages` to serve the build under `/ASCII-Converter/`, as GitHub Pages does, and fail if the page requests anything outside that path. Add `-- --readme` to re-export `examples/spheres-ascii.png`.
+
+`npm run check:types` packs the package, installs it into throwaway projects with TypeScript 5.9 and 7, and type-checks a file that imports both entry points under `moduleResolution` node10, node16, nodenext and bundler (TypeScript 7 has dropped node10). It needs network access to install TypeScript.
 
 ```text
 src/core/      conversion, ramps and renderers (no I/O, browser-safe)
@@ -201,7 +207,7 @@ src/node/      JPEG / PNG / GIF file decoding for Node
 src/cli/       argument parsing and terminal output
 web/           the browser page (Vite): canvas renderer, export, playback
 test/          unit tests for the core, decoders, CLI and web sizing logic
-scripts/       example image generator and the headless browser check
+scripts/       example image generator, headless browser check, package type check
 examples/      generated sample images and outputs
 ```
 
