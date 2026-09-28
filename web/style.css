@@ -234,6 +234,90 @@ input[type='color'] {
   display: block;
 }
 
+/* Before/after compare: the original lies exactly over the preview. */
+#compare-box {
+  position: relative;
+  line-height: 0;
+}
+
+#original {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+#compare-box.comparing {
+  cursor: ew-resize;
+  /* Horizontal drags move the divider; vertical ones still scroll on phones. */
+  touch-action: pan-y;
+  user-select: none;
+}
+
+#divider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 0;
+}
+
+#divider::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -1px;
+  width: 2px;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.5);
+}
+
+/* 24px wide so at 0% or 100% it sticks out no further than the stage padding. */
+#divider-handle {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  box-sizing: border-box;
+  width: 24px;
+  height: 24px;
+  transform: translate(-50%, -50%);
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #2c4632;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.6);
+  cursor: ew-resize;
+}
+
+#divider-handle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.segmented {
+  display: inline-flex;
+}
+
+.segmented button {
+  border-radius: 0;
+  margin-left: -1px;
+}
+
+.segmented button:first-child {
+  border-radius: 5px 0 0 5px;
+  margin-left: 0;
+}
+
+.segmented button:last-child {
+  border-radius: 0 5px 5px 0;
+}
+
+.segmented button[aria-pressed='true'] {
+  background: #2c4632;
+  border-color: #3f6647;
+  position: relative;
+}
+
 #stage.dragging {
   outline: 2px dashed var(--accent);
   outline-offset: -8px;

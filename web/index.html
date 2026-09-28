@@ -38,6 +38,14 @@
             <button type="button" id="play">Pause</button>
             <span id="frame-info" class="muted"></span>
           </div>
+          <div class="row" role="group" aria-label="View">
+            <span class="muted">View</span>
+            <span class="segmented">
+              <button type="button" data-view="ascii" aria-pressed="true">ASCII</button>
+              <button type="button" data-view="compare" aria-pressed="false" title="Drag the divider to compare with the original">Compare</button>
+              <button type="button" data-view="original" aria-pressed="false" aria-keyshortcuts="O" title="Show the original image (or hold O to peek)">Original</button>
+            </span>
+          </div>
         </section>
 
         <section>
@@ -126,7 +134,24 @@
       </form>
 
       <section id="stage" aria-label="Output">
-        <canvas id="preview" role="img" aria-label="ASCII art preview"></canvas>
+        <div id="compare-box">
+          <canvas id="preview" role="img" aria-label="ASCII art preview"></canvas>
+          <!-- The original image, drawn in exactly the preview's box and revealed with a clip. Never exported. -->
+          <canvas id="original" role="img" aria-label="Original image" hidden></canvas>
+          <div id="divider" hidden>
+            <div
+              id="divider-handle"
+              role="slider"
+              tabindex="0"
+              aria-label="Compare original and ASCII"
+              aria-orientation="horizontal"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="50"
+              aria-valuetext="50% original, 50% ASCII"
+            ></div>
+          </div>
+        </div>
         <p id="drop-hint">Drop an image or video</p>
       </section>
     </main>

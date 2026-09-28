@@ -1,5 +1,5 @@
 import '@fontsource/jetbrains-mono/latin-400.css';
-import { convert, toHtml, toText, type AsciiArt, type ConvertOptions } from '../src/core/index.js';
+import { convert, toHtml, toText, type AsciiArt, type ConvertOptions, type PixelData } from '../src/core/index.js';
 import orbitUrl from '../examples/orbit.gif';
 import spheresUrl from '../examples/spheres.png';
 import { drawArt, measureCell, type DrawStyle } from './draw.js';
@@ -15,6 +15,7 @@ import {
   type SquareMode,
 } from './layout.js';
 import { canvasLimits } from './canvas-limits.js';
+import { clampPercent, effectiveView, isView, keyStep, originalClip, percentAt, valueText, type View } from './compare.js';
 import { closeSource, frameOf, openFile, type Source } from './media.js';
 
 const FONTS: Record<string, string> = {
@@ -72,6 +73,11 @@ const stage = byId('stage');
 const preview = byId<HTMLCanvasElement>('preview');
 const status = byId('status');
 const info = byId('info');
+const compareBox = byId('compare-box');
+const original = byId<HTMLCanvasElement>('original');
+const divider = byId('divider');
+const handle = byId('divider-handle');
+const viewButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-view]'));
 
 let source: Source | undefined;
 let art: AsciiArt | undefined;
@@ -87,6 +93,16 @@ let coloursTouched = false;
 let loadToken = 0;
 /** Bumped by play() and pause() so a superseded video frame loop stops. */
 let playToken = 0;
+/** Compare view: what is shown over the preview. Starts as ASCII only. */
+let view: View = 'ascii';
+/** True while the peek key (O) is held down. */
+let peeking = false;
+/** Divider position in percent of the preview width. */
+let dividerPercent = 50;
+/** Pointer currently dragging the divider. */
+let dragPointer: number | undefined;
+/** The exact pixels behind the current art, drawn as the original. */
+let shownPixels: PixelData | undefined;
 
 interface Recording {
   recorder: MediaRecorder;
@@ -144,7 +160,8 @@ function refresh(): void {
     return;
   }
   if (status.textContent === rampMessage) setStatus('');
-  art = convert(frameOf(source, gifIndex), currentOptions());
+  shownPixels = frameOf(source, gifIndex);
+  art = convert(shownPixels, currentOptions());
   drawPreview();
   updateExportSize();
   if (recording) drawRecordingFrame(recording);
@@ -193,6 +210,81 @@ function drawPreview(): void {
   const ctx = preview.getContext('2d')!;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   drawArt(ctx, art, style(previewFontSize, false));
+  drawOriginal();
+}
+
+// ---- compare with the original ---------------------------------------------
+
+const pixelCanvas = document.createElement('canvas');
+
+/**
+ * Draw the pixels the art was converted from over the preview's whole box.
+ * The converter spreads the image evenly over the character grid, so
+ * stretching it to the preview canvas lines every cell up with the part of
+ * the image it came from. Only the on-screen view uses this canvas; exports
+ * draw from the art alone.
+ */
+function drawOriginal(): void {
+  const shown = effectiveView(view, peeking);
+  original.hidden = shown === 'ascii';
+  divider.hidden = shown !== 'compare';
+  compareBox.classList.toggle('comparing', shown === 'compare');
+  original.style.clipPath = originalClip(shown, dividerPercent);
+  if (shown === 'ascii' || !shownPixels) return;
+
+  if (original.width !== preview.width) original.width = preview.width;
+  if (original.height !== preview.height) original.height = preview.height;
+  const { width: w, height: h } = shownPixels;
+  if (pixelCanvas.width !== w || pixelCanvas.height !== h) {
+    pixelCanvas.width = w;
+    pixelCanvas.height = h;
+  }
+  const data =
+    shownPixels instanceof ImageData
+      ? shownPixels
+      : new ImageData(Uint8ClampedArray.from(shownPixels.data), w, h);
+  pixelCanvas.getContext('2d')!.putImageData(data, 0, 0);
+
+  const ctx = original.getContext('2d')!;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  // Transparent parts show the page background, not the ASCII underneath.
+  ctx.fillStyle = bg.value;
+  ctx.fillRect(0, 0, original.width, original.height);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(pixelCanvas, 0, 0, original.width, original.height);
+}
+
+function setView(next: View): void {
+  view = next;
+  for (const button of viewButtons) button.setAttribute('aria-pressed', String(button.dataset.view === view));
+  drawOriginal();
+}
+
+function setDivider(percent: number): void {
+  dividerPercent = clampPercent(percent);
+  divider.style.left = `${dividerPercent}%`;
+  handle.setAttribute('aria-valuenow', String(Math.round(dividerPercent)));
+  handle.setAttribute('aria-valuetext', valueText(dividerPercent));
+  original.style.clipPath = originalClip(effectiveView(view, peeking), dividerPercent);
+}
+
+function dividerAt(e: PointerEvent): void {
+  const box = preview.getBoundingClientRect();
+  setDivider(percentAt(e.clientX, box.left, box.width));
+}
+
+function setPeeking(on: boolean): void {
+  if (peeking === on) return;
+  peeking = on;
+  drawOriginal();
+}
+
+/** Typing an "o" into a text field or list shouldn't peek. */
+function isTyping(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return true;
+  return target instanceof HTMLInputElement && ['text', 'search', 'url', 'email', 'number', 'password'].includes(target.type);
 }
 
 /** Messages (saved, errors). Kept apart from the per-frame info line so playback doesn't wipe them. */
@@ -493,6 +585,45 @@ document.addEventListener('paste', (e) => {
   const file = Array.from(e.clipboardData?.files ?? []).find((f) => /^(image|video)\//.test(f.type));
   if (file) void load(file, file.name || 'pasted image');
 });
+
+// Compare with the original: view buttons, divider drag and keys, hold O to peek.
+for (const button of viewButtons) {
+  button.addEventListener('click', () => {
+    if (isView(button.dataset.view)) setView(button.dataset.view);
+  });
+}
+compareBox.addEventListener('pointerdown', (e) => {
+  if (effectiveView(view, peeking) !== 'compare' || e.button !== 0) return;
+  dragPointer = e.pointerId;
+  compareBox.setPointerCapture(e.pointerId);
+  dividerAt(e);
+  handle.focus({ preventScroll: true });
+  e.preventDefault();
+});
+compareBox.addEventListener('pointermove', (e) => {
+  if (e.pointerId === dragPointer) dividerAt(e);
+});
+for (const type of ['pointerup', 'pointercancel', 'lostpointercapture'] as const) {
+  compareBox.addEventListener(type, (e) => {
+    if (e.pointerId === dragPointer) dragPointer = undefined;
+  });
+}
+handle.addEventListener('keydown', (e) => {
+  const next = keyStep(e.key, dividerPercent, e.shiftKey);
+  if (next === undefined) return;
+  e.preventDefault();
+  setDivider(next);
+});
+document.addEventListener('keydown', (e) => {
+  if ((e.key === 'o' || e.key === 'O') && !e.ctrlKey && !e.metaKey && !e.altKey && !isTyping(e.target)) {
+    setPeeking(true);
+  }
+});
+document.addEventListener('keyup', (e) => {
+  if (e.key === 'o' || e.key === 'O') setPeeking(false);
+});
+window.addEventListener('blur', () => setPeeking(false));
+setDivider(dividerPercent);
 
 await applyFont();
 await loadSample('spheres');
