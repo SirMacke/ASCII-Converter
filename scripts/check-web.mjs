@@ -438,6 +438,227 @@ try {
   const s = await info();
   check('Video frames are converted', /orbit\.webm, \d+×\d+ → \d+×\d+ characters/.test(s), s);
 
+  // Compare with the original. The test image is green on the left half and
+  // magenta on the right; with colour off the ASCII is grey on black, so a
+  // screenshot sample tells original from ASCII.
+  {
+    const halves = join(work, 'halves.png');
+    {
+      const png = new pngjs.PNG({ width: 800, height: 400 });
+      for (let i = 0; i < 800 * 400; i++) png.data.set(i % 800 < 400 ? [0, 200, 0, 255] : [200, 0, 200, 255], i * 4);
+      writeFileSync(halves, pngjs.PNG.sync.write(png));
+    }
+    const setChecked = (id, on) =>
+      evaluate(`(() => {
+        const el = document.getElementById(${JSON.stringify(id)});
+        if (el.checked !== ${on}) el.click();
+        return new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      })()`);
+    const click = (selector) =>
+      evaluate(`(() => {
+        document.querySelector(${JSON.stringify(selector)}).click();
+        return new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      })()`);
+    const rect = (id) =>
+      evaluate(`(() => { const b = document.getElementById(${JSON.stringify(id)}).getBoundingClientRect(); return { x: b.x, y: b.y, width: b.width, height: b.height }; })()`);
+    /** Share of green and magenta pixels in a 16x16 screenshot patch at a fraction of the preview box. */
+    const sample = async (fx, fy = 0.5) => {
+      const box = await rect('preview');
+      const clip = { x: Math.round(box.x + fx * box.width) - 8, y: Math.round(box.y + fy * box.height) - 8, width: 16, height: 16, scale: 1 };
+      const shot = await page('Page.captureScreenshot', { format: 'png', clip });
+      const img = pngjs.PNG.sync.read(Buffer.from(shot.data, 'base64'));
+      let green = 0;
+      let magenta = 0;
+      const n = img.width * img.height;
+      for (let i = 0; i < n; i++) {
+        const [r, g, b] = img.data.subarray(i * 4, i * 4 + 3);
+        if (g > 150 && r < 60 && b < 60) green++;
+        if (r > 150 && b > 150 && g < 60) magenta++;
+      }
+      return { green: green / n, magenta: magenta / n };
+    };
+    const shows = async (fx) => {
+      const s = await sample(fx);
+      return s.green > 0.9 ? 'green' : s.magenta > 0.9 ? 'magenta' : s.green < 0.1 && s.magenta < 0.1 ? 'ascii' : `mixed ${JSON.stringify(s)}`;
+    };
+    const key = async (name, code, keyCode, modifiers = 0) => {
+      await page('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: name, code, windowsVirtualKeyCode: keyCode, modifiers });
+      await page('Input.dispatchKeyEvent', { type: 'keyUp', key: name, code, windowsVirtualKeyCode: keyCode, modifiers });
+    };
+    const sliderValue = () => evaluate(`Number(document.getElementById('divider-handle').getAttribute('aria-valuenow'))`);
+    const aligned = async () => {
+      const [a, b] = [await rect('preview'), await rect('original')];
+      const sizes = await evaluate(`(() => { const p = document.getElementById('preview'), o = document.getElementById('original'); return [p.width, p.height, o.width, o.height]; })()`);
+      return (
+        Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5 && Math.abs(a.width - b.width) < 0.5 && Math.abs(a.height - b.height) < 0.5 &&
+        sizes[0] === sizes[2] && sizes[1] === sizes[3]
+      );
+    };
+
+    await page('Emulation.setDeviceMetricsOverride', { width: 1366, height: 768, deviceScaleFactor: 1, mobile: false });
+    await page('Page.navigate', { url });
+    await waitFor(`/^spheres\\.png, 480×360 → /.test(document.getElementById('info').textContent)`);
+    await setFile(halves);
+    await waitFor(`document.getElementById('info').textContent.startsWith('halves.png, 800×400')`);
+    await setChecked('color', false);
+
+    const initial = await evaluate(`({
+      pressed: document.querySelector('[data-view="ascii"]').getAttribute('aria-pressed'),
+      original: document.getElementById('original').hidden,
+      divider: document.getElementById('divider').hidden,
+    })`);
+    check('Compare: starts as ASCII only', initial.pressed === 'true' && initial.original && initial.divider, initial);
+    check('Compare: ASCII view shows no original', (await shows(0.25)) === 'ascii' && (await shows(0.75)) === 'ascii');
+
+    // Exports and text with the default view, to compare against later.
+    await setControl('format', 'png');
+    await setControl('size', '512');
+    await setControl('square', 'none');
+    await evaluate(`document.getElementById('export').click()`);
+    const pngBefore = await download('halves.png');
+    await evaluate(`document.getElementById('download-txt').click()`);
+    const txtBefore = await download('halves.txt');
+
+    await click('[data-view="original"]');
+    check('Original button shows the original everywhere', (await shows(0.25)) === 'green' && (await shows(0.75)) === 'magenta');
+    check('Original lines up with the ASCII preview exactly', await aligned());
+    await click('[data-view="ascii"]');
+    check('ASCII button hides it again', (await shows(0.25)) === 'ascii' && (await shows(0.75)) === 'ascii');
+
+    // Hold O to peek, with focus on the page.
+    await evaluate(`document.activeElement?.blur()`);
+    await page('Input.dispatchKeyEvent', { type: 'keyDown', key: 'o', code: 'KeyO', windowsVirtualKeyCode: 79, text: 'o' });
+    await sleep(50);
+    const peek = [await shows(0.25), await shows(0.75)];
+    await page('Input.dispatchKeyEvent', { type: 'keyUp', key: 'o', code: 'KeyO', windowsVirtualKeyCode: 79 });
+    await sleep(50);
+    const after = [await shows(0.25), await shows(0.75)];
+    check('Holding O peeks at the original; letting go returns', peek.join() === 'green,magenta' && after.join() === 'ascii,ascii', { peek, after });
+
+    await click('[data-view="compare"]');
+    const at50 = [await sliderValue(), await shows(0.25), await shows(0.75)];
+    check('Compare at 50%: original on the left, ASCII on the right', at50.join() === '50,green,ascii', at50);
+
+    // Keyboard on the focused handle.
+    await evaluate(`document.getElementById('divider-handle').focus()`);
+    await key('Home', 'Home', 36);
+    const at0 = [await sliderValue(), await shows(0.25), await shows(0.75)];
+    check('Compare at 0% (Home): ASCII everywhere', at0.join() === '0,ascii,ascii', at0);
+    await key('End', 'End', 35);
+    const at100 = [await sliderValue(), await shows(0.25), await shows(0.75)];
+    check('Compare at 100% (End): original everywhere', at100.join() === '100,green,magenta', at100);
+    await key('ArrowLeft', 'ArrowLeft', 37);
+    const v1 = await sliderValue();
+    await key('ArrowLeft', 'ArrowLeft', 37, 8); // Shift
+    const v2 = await sliderValue();
+    await key('PageDown', 'PageDown', 34);
+    const v3 = await sliderValue();
+    check('Arrow keys, Shift+Arrow and Page Down move the divider', [v1, v2, v3].join() === '99,89,79', [v1, v2, v3]);
+    const a11y = await evaluate(`(() => { const h = document.getElementById('divider-handle'); return { role: h.getAttribute('role'), name: h.getAttribute('aria-label'), text: h.getAttribute('aria-valuetext'), tab: h.tabIndex }; })()`);
+    check('Divider handle is a named, focusable slider with a value', a11y.role === 'slider' && Boolean(a11y.name) && a11y.text === '79% original, 21% ASCII' && a11y.tab === 0, a11y);
+
+    // Mouse drag from the handle to 30%.
+    {
+      const h = await rect('divider-handle');
+      const box = await rect('preview');
+      const [x0, y] = [h.x + h.width / 2, h.y + h.height / 2];
+      const x1 = box.x + box.width * 0.3;
+      await page('Input.dispatchMouseEvent', { type: 'mousePressed', x: x0, y, button: 'left', clickCount: 1 });
+      await page('Input.dispatchMouseEvent', { type: 'mouseMoved', x: (x0 + x1) / 2, y, button: 'left' });
+      await page('Input.dispatchMouseEvent', { type: 'mouseMoved', x: x1, y, button: 'left' });
+      await page('Input.dispatchMouseEvent', { type: 'mouseReleased', x: x1, y, button: 'left', clickCount: 1 });
+      const v = await sliderValue();
+      check('Dragging with the mouse moves the divider', Math.abs(v - 30) <= 1, v);
+    }
+
+    // Touch drag from 30% to 70%.
+    {
+      const box = await rect('preview');
+      const y = box.y + box.height / 2;
+      const at = (f) => [{ x: box.x + box.width * f, y, id: 1 }];
+      await page('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: at(0.3) });
+      await page('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: at(0.5) });
+      await page('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: at(0.7) });
+      await page('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      await sleep(50);
+      const v = await sliderValue();
+      check('Dragging with touch moves the divider', Math.abs(v - 70) <= 1, v);
+    }
+
+    // Still lined up after an option change and at both desktop sizes, with no page scroll.
+    await setControl('width', 180);
+    check('Original still lines up after changing the width', await aligned());
+    for (const [width, height] of [
+      [1920, 1080],
+      [1366, 768],
+    ]) {
+      await page('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+      await sleep(300);
+      const m = await measure();
+      const overflow = await evaluate(`(() => { const c = document.getElementById('controls'); return c.scrollHeight - c.clientHeight; })()`);
+      check(
+        `${width}x${height} with compare on: no page scroll, controls fit, original lined up`,
+        m.scrollHeight <= m.innerHeight && m.scrollWidth <= m.innerWidth && overflow <= 0 && (await aligned()),
+        { scrollHeight: m.scrollHeight, innerHeight: m.innerHeight, overflow },
+      );
+    }
+    await setControl('width', 100);
+
+    // Exports are the same whatever the view.
+    for (const v of ['compare', 'original']) {
+      await click(`[data-view="${v}"]`);
+      await evaluate(`document.getElementById('export').click()`);
+      const png = await download('halves.png');
+      await evaluate(`document.getElementById('download-txt').click()`);
+      const txt = await download('halves.txt');
+      check(`Exports are unchanged with the ${v} view on`, png.equals(pngBefore) && txt.equals(txtBefore), {
+        png: png.length,
+        before: pngBefore.length,
+      });
+    }
+
+    // Phone: with the divider at either end the handle must not make anything scroll sideways.
+    {
+      await click('[data-view="compare"]');
+      await page('Emulation.setDeviceMetricsOverride', { width: 1366, height: 768, deviceScaleFactor: 1, mobile: false });
+      await sleep(300);
+      await evaluate(`document.getElementById('divider-handle').focus()`);
+      await key('Home', 'Home', 36);
+      for (let i = 0; i < 5; i++) await key('PageUp', 'PageUp', 33);
+      await sleep(100);
+      const shot = await page('Page.captureScreenshot', { format: 'png' });
+      writeFileSync(join(work, 'compare-1366x768.png'), Buffer.from(shot.data, 'base64'));
+      await key('End', 'End', 35);
+      await page('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+      await sleep(300);
+      const bad = [];
+      for (const [name, code, keyCode] of [
+        ['Home', 'Home', 36],
+        ['End', 'End', 35],
+      ]) {
+        await evaluate(`document.getElementById('divider-handle').focus({ preventScroll: true })`);
+        await key(name, code, keyCode);
+        const m = await evaluate(`(() => { const s = document.getElementById('stage'); return { doc: document.documentElement.scrollWidth, inner: innerWidth, stage: s.scrollWidth, stageClient: s.clientWidth }; })()`);
+        if (m.doc > m.inner || m.stage > m.stageClient) bad.push({ key: name, ...m });
+      }
+      check('390x844 with compare on: no sideways scroll with the divider at either end', bad.length === 0 && (await aligned()), bad[0]);
+      await page('Emulation.setDeviceMetricsOverride', { width: 1366, height: 768, deviceScaleFactor: 1, mobile: false });
+      await sleep(200);
+    }
+
+    // GIF playback: the original follows the frames and stays lined up.
+    await click('[data-view="compare"]');
+    await setControl('sample', 'orbit');
+    await waitFor(`document.getElementById('info').textContent.startsWith('orbit.gif')`);
+    await waitFor(`document.getElementById('frame-info').textContent.startsWith('Frame')`);
+    const snap = () => evaluate(`document.getElementById('original').toDataURL()`);
+    const s0 = await snap();
+    await sleep(300);
+    const s1 = await snap();
+    check('GIF playback: the original follows the frames and stays lined up', s0 !== s1 && (await aligned()));
+    await click('[data-view="ascii"]');
+  }
+
   // iOS Safari refuses canvases over 16.7 megapixels. Pretend to be an
   // iPhone on a big screen and ask for 4x the preview (about 30 MP).
   {
