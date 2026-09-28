@@ -14,6 +14,7 @@ import {
   type CellMetrics,
   type SquareMode,
 } from './layout.js';
+import { canvasLimits } from './canvas-limits.js';
 import { closeSource, frameOf, openFile, type Source } from './media.js';
 
 const FONTS: Record<string, string> = {
@@ -212,7 +213,7 @@ function exportArt(layout: ReturnType<typeof exportLayout>): AsciiArt {
 
 function currentExportLayout() {
   if (!art) return undefined;
-  return exportLayout({
+  const input = {
     columns: art.columns,
     rows: art.rows,
     cell,
@@ -220,12 +221,22 @@ function currentExportLayout() {
     screenFontSize: previewFontSize,
     square: square.value as SquareMode,
     padding: EXPORT_PADDING,
-  });
+  };
+  // Work out the size asked for, then shrink it to what this browser can draw.
+  const wanted = exportLayout(input);
+  return exportLayout({ ...input, limits: canvasLimits(wanted.width * wanted.height) });
 }
 
 function updateExportSize(): void {
   const layout = currentExportLayout();
-  exportSize.textContent = layout ? `${layout.width} × ${layout.height} px${layout.limited ? ' (max)' : ''}` : '';
+  if (!layout) return setText(exportSize, '');
+  const { width: w, height: h, requested } = layout;
+  setText(
+    exportSize,
+    layout.reduced
+      ? `${requested.width} × ${requested.height} → ${w} × ${h} px, reduced to fit this browser`
+      : `${w} × ${h} px${layout.limited ? ' (max)' : ''}`,
+  );
 }
 
 async function exportImage(): Promise<void> {
@@ -249,7 +260,7 @@ async function exportImage(): Promise<void> {
   save(blob, `${baseName}.${ext}`);
   setStatus(
     blob.type === fmt.mime
-      ? `Saved ${baseName}.${ext}, ${layout.width}×${layout.height}.`
+      ? `Saved ${baseName}.${ext}, ${layout.width}×${layout.height}${layout.reduced ? ' (reduced to fit this browser)' : ''}.`
       : `This browser can't encode ${key.toUpperCase()}; saved a PNG instead.`,
   );
 }

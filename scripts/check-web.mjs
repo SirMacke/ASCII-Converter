@@ -409,6 +409,36 @@ try {
   const s = await info();
   check('Video frames are converted', /orbit\.webm, \d+×\d+ → \d+×\d+ characters/.test(s), s);
 
+  // iOS Safari refuses canvases over 16.7 megapixels. Pretend to be an
+  // iPhone on a big screen and ask for 4x the preview (about 30 MP).
+  {
+    const iphone =
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1';
+    await page('Emulation.setUserAgentOverride', { userAgent: iphone });
+    await page('Emulation.setDeviceMetricsOverride', { width: 1920, height: 1080, deviceScaleFactor: 1, mobile: false });
+    await page('Page.navigate', { url });
+    await waitFor(`/^spheres\\.png, 480×360 → /.test(document.getElementById('info').textContent)`);
+    await setControl('format', 'png');
+    await setControl('square', 'none');
+    await setControl('size', 'x4');
+    const label = await evaluate(`document.getElementById('export-size').textContent`);
+    const m = /^(\d+) × (\d+) → (\d+) × (\d+) px, reduced to fit this browser$/.exec(label);
+    check('iOS: a 4x export over 16.7 MP says it will be reduced', Boolean(m), label);
+    await evaluate(`document.getElementById('export').click()`);
+    bytes = await download('spheres.png');
+    const [w, h] = pngSize(bytes);
+    const ok =
+      m !== null &&
+      w === Number(m[3]) &&
+      h === Number(m[4]) &&
+      w * h <= 16_777_216 &&
+      Math.abs(w / h - Number(m[1]) / Number(m[2])) < 0.01;
+    check('iOS: the exported PNG is the reduced size, under 16.7 MP, same shape', ok, { label, actual: [w, h], pixels: w * h });
+    const saved = await status();
+    check('iOS: the save message mentions the reduction', saved.includes('reduced to fit this browser'), saved);
+    await page('Emulation.setUserAgentOverride', { userAgent: '' });
+  }
+
   if (writeReadmeImage) {
     await page('Page.navigate', { url });
     await waitFor(`/^spheres\\.png, 480×360 → /.test(document.getElementById('info').textContent)`);

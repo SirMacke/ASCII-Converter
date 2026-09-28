@@ -129,6 +129,51 @@ export function sliceArt(art: AsciiArt, region: CellRegion): AsciiArt {
   return { columns: region.columns, rows: region.rows, chars, colors };
 }
 
+/** The largest canvas a browser will actually draw into. */
+export interface CanvasLimits {
+  /** Longest side in pixels. */
+  maxSide: number;
+  /** Total pixels. */
+  maxArea: number;
+}
+
+/**
+ * iOS and iPadOS Safari refuse canvases over 16,777,216 pixels (4096 x 4096):
+ * drawing silently does nothing and toBlob returns null.
+ */
+export const IOS_CANVAS_AREA = 16_777_216;
+
+/** iPhone, iPad or iPod; iPadOS reports itself as a Mac with a touch screen. */
+export function isAppleMobile(nav: { userAgent: string; platform?: string; maxTouchPoints?: number }): boolean {
+  return /\biP(hone|ad|od)\b/.test(nav.userAgent) || (nav.platform === 'MacIntel' && (nav.maxTouchPoints ?? 0) > 1);
+}
+
+/** What has been learned about canvas areas so far: `ok` works, `fail` and above don't. */
+export interface AreaKnowledge {
+  ok: number;
+  fail: number;
+}
+
+/**
+ * The largest canvas area known to work that is at most `requested`,
+ * probing only what isn't known yet. Tries the requested area, then halves
+ * it until a probe succeeds. Updates `known` so each area is probed once.
+ */
+export function usableArea(requested: number, known: AreaKnowledge, probe: (area: number) => boolean, smallest = 1_000_000): number {
+  if (requested <= known.ok) return requested;
+  let candidate = Math.min(requested, known.fail - 1);
+  while (candidate > known.ok) {
+    if (probe(candidate)) {
+      known.ok = candidate;
+      break;
+    }
+    known.fail = candidate;
+    if (candidate <= smallest) break;
+    candidate = Math.max(smallest, Math.floor(candidate / 2));
+  }
+  return Math.max(1, Math.min(requested, known.ok));
+}
+
 /** none keeps the art's shape; pad and crop make a square (for avatars). */
 export type SquareMode = 'none' | 'pad' | 'crop';
 
@@ -142,8 +187,10 @@ export interface ExportLayoutInput {
   square: SquareMode;
   /** Margin around the art, in multiples of the font size. */
   padding: number;
-  /** Largest allowed canvas side. Browsers refuse very large canvases. */
+  /** Largest canvas side the page offers, whatever the browser. Default 8192. */
   maxSide?: number;
+  /** What this browser can draw into; the image shrinks to fit, keeping its shape. */
+  limits?: CanvasLimits;
 }
 
 export interface ExportLayout {
@@ -157,6 +204,10 @@ export interface ExportLayout {
   region: CellRegion;
   /** True when the requested size had to be reduced to stay under maxSide. */
   limited: boolean;
+  /** The size that was asked for (after maxSide), before fitting the browser's limits. */
+  requested: { width: number; height: number };
+  /** True when the image was scaled down to fit the browser's canvas limits. */
+  reduced: boolean;
 }
 
 /** Work out canvas size, font size and grid offset for an exported image. */
@@ -181,8 +232,26 @@ export function exportLayout(input: ExportLayoutInput): ExportLayout {
   const limited = fontSize > limit;
   if (limited) fontSize = limit;
 
-  const width = Math.max(1, Math.round(boxW * fontSize));
-  const height = Math.max(1, Math.round(boxH * fontSize));
+  let width = Math.max(1, Math.round(boxW * fontSize));
+  let height = Math.max(1, Math.round(boxH * fontSize));
+  const requested = { width, height };
+
+  let reduced = false;
+  const { limits } = input;
+  if (limits && (width > limits.maxSide || height > limits.maxSide || width * height > limits.maxArea)) {
+    const factor = Math.min(limits.maxSide / width, limits.maxSide / height, Math.sqrt(limits.maxArea / (width * height)));
+    fontSize *= factor;
+    // Round down (allowing for float error), then make sure rounding didn't
+    // leave the canvas a pixel over.
+    const over = (): boolean => width > limits.maxSide || height > limits.maxSide || width * height > limits.maxArea;
+    do {
+      width = Math.max(1, Math.floor(boxW * fontSize + 1e-6));
+      height = Math.max(1, Math.floor(boxH * fontSize + 1e-6));
+      if (over()) fontSize *= 0.999;
+    } while (over());
+    reduced = true;
+  }
+
   return {
     width,
     height,
@@ -191,5 +260,7 @@ export function exportLayout(input: ExportLayoutInput): ExportLayout {
     offsetY: (height - artH * fontSize) / 2,
     region,
     limited,
+    requested,
+    reduced,
   };
 }

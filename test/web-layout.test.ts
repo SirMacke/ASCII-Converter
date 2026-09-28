@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  IOS_CANVAS_AREA,
+  isAppleMobile,
+  usableArea,
   FORMATS,
   MAX_CANVAS_AREA,
   MAX_CANVAS_SIDE,
@@ -170,5 +173,112 @@ describe('capFontSize', () => {
     expect(h).toBeLessThanOrEqual(MAX_CANVAS_SIDE);
     expect(w * h).toBeLessThanOrEqual(MAX_CANVAS_AREA);
     expect(size).toBeGreaterThan(10);
+  });
+});
+
+describe('browser canvas limits', () => {
+  // 80 x 40 cells of 0.6em x 1.2em -> 48em x 48em, a square.
+  const square: ExportLayoutInput = {
+    columns: 80,
+    rows: 40,
+    cell,
+    size: { kind: 'width', pixels: 4096 },
+    screenFontSize: 10,
+    square: 'none',
+    padding: 0,
+  };
+  const ios = { maxSide: 8192, maxArea: IOS_CANVAS_AREA };
+
+  it('leaves exports that fit alone', () => {
+    const out = exportLayout({ ...square, limits: ios });
+    expect(out).toMatchObject({ width: 4096, height: 4096, reduced: false, requested: { width: 4096, height: 4096 } });
+  });
+
+  it('scales an export over the area limit down, keeping its shape', () => {
+    // 12x a 10px preview font: 48em * 120px = 5760 px square, about 33 MP.
+    const out = exportLayout({ ...square, size: { kind: 'scale', factor: 12 }, limits: ios });
+    expect(out.requested).toEqual({ width: 5760, height: 5760 });
+    expect(out.reduced).toBe(true);
+    expect(out.width * out.height).toBeLessThanOrEqual(IOS_CANVAS_AREA);
+    expect(out.width).toBe(out.height);
+    expect(out.width).toBeGreaterThanOrEqual(4095);
+  });
+
+  it('keeps the aspect ratio of wide art when reducing', () => {
+    // 80 x 20 cells -> 48em x 24em, 2:1.
+    const out = exportLayout({ ...square, rows: 20, limits: { maxSide: 8192, maxArea: 2_000_000 } });
+    expect(out.requested).toEqual({ width: 4096, height: 2048 });
+    expect(out.width * out.height).toBeLessThanOrEqual(2_000_000);
+    expect(out.width / out.height).toBeCloseTo(2, 2);
+    expect(out.width).toBeGreaterThan(1990);
+  });
+
+  it('respects a smaller maximum side', () => {
+    const out = exportLayout({ ...square, rows: 20, limits: { maxSide: 2048, maxArea: 1e9 } });
+    expect(out).toMatchObject({ width: 2048, height: 1024, reduced: true });
+    expect(out.fontSize * 48).toBeLessThanOrEqual(2048);
+  });
+
+  it('centres the art in a reduced padded square', () => {
+    const out = exportLayout({ ...square, rows: 20, square: 'pad', padding: 1, limits: { maxSide: 8192, maxArea: 1_000_000 } });
+    expect(out.width).toBe(out.height);
+    expect(out.width).toBeLessThanOrEqual(1000);
+    // One font size of padding, give or take the pixel lost to rounding down.
+    expect(Math.abs(out.offsetX - out.fontSize)).toBeLessThan(1);
+    expect(out.offsetY).toBeCloseTo((out.height - 24 * out.fontSize) / 2);
+  });
+});
+
+describe('usableArea', () => {
+  /** A fake browser that can draw up to `limit` pixels and records what was probed. */
+  const browser = (limit: number) => {
+    const probed: number[] = [];
+    return { probed, probe: (a: number) => (probed.push(a), a <= limit) };
+  };
+
+  it('does not probe areas already known to work', () => {
+    const b = browser(50e6);
+    const known = { ok: 20e6, fail: Infinity };
+    expect(usableArea(10e6, known, b.probe)).toBe(10e6);
+    expect(b.probed).toEqual([]);
+  });
+
+  it('probes the requested area once and remembers it', () => {
+    const b = browser(50e6);
+    const known = { ok: 0, fail: Infinity };
+    expect(usableArea(40e6, known, b.probe)).toBe(40e6);
+    expect(usableArea(30e6, known, b.probe)).toBe(30e6);
+    expect(b.probed).toEqual([40e6]);
+  });
+
+  it('halves until a probe succeeds, and never retries a failed size', () => {
+    const b = browser(IOS_CANVAS_AREA);
+    const known = { ok: 0, fail: Infinity };
+    expect(usableArea(64e6, known, b.probe)).toBe(16e6);
+    expect(b.probed).toEqual([64e6, 32e6, 16e6]);
+    expect(known).toEqual({ ok: 16e6, fail: 32e6 });
+    // Asking for 40 MP again only probes below the known failure, then
+    // settles for the largest area that has worked.
+    expect(usableArea(40e6, known, b.probe)).toBe(16e6);
+    expect(b.probed.at(-1)).toBe(32e6 - 1);
+  });
+
+  it('starts below a known ceiling such as the iOS limit', () => {
+    const b = browser(1e9);
+    const known = { ok: 0, fail: IOS_CANVAS_AREA + 1 };
+    expect(usableArea(64e6, known, b.probe)).toBe(IOS_CANVAS_AREA);
+    expect(b.probed).toEqual([IOS_CANVAS_AREA]);
+  });
+});
+
+describe('isAppleMobile', () => {
+  it('recognises iPhone, iPad and iPadOS desktop mode', () => {
+    const iphone = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1';
+    expect(isAppleMobile({ userAgent: iphone })).toBe(true);
+    expect(isAppleMobile({ userAgent: 'Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X)' })).toBe(true);
+    const mac = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15';
+    expect(isAppleMobile({ userAgent: mac, platform: 'MacIntel', maxTouchPoints: 5 })).toBe(true);
+    expect(isAppleMobile({ userAgent: mac, platform: 'MacIntel', maxTouchPoints: 0 })).toBe(false);
+    expect(isAppleMobile({ userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140.0', platform: 'Win32' })).toBe(false);
   });
 });
