@@ -3,25 +3,33 @@
 //
 //   npm run check:web                   # builds web/dist, serves it on :4173, checks it
 //   node scripts/check-web.mjs <url>    # check a page that is already being served
+//   npm run check:web -- --pages        # serve web/dist under /ASCII-Converter/ like GitHub Pages
 //
 // Set CHROME to the browser binary if it is not in a standard location.
 // Checks: no page scroll at 1920x1080, 1440x900 and 1366x768 with large,
 // tiny, very wide and very tall images; a tall image on a phone; keyboard
 // access to the file picker; the font licence; exported image sizes,
 // formats and square crops; GIF playback timing; messages surviving
-// playback; WebM recording and video playback of that recording.
+// playback; WebM recording and video playback of that recording; exports
+// reduced to fit iOS Safari's canvas limit.
 // Exits 1 if anything fails.
 
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { join } from 'node:path';
+import { createServer } from 'node:http';
+import { extname, join, normalize } from 'node:path';
 import jpeg from 'jpeg-js';
 import pngjs from 'pngjs';
 
 const args = process.argv.slice(2);
-const url = args.find((a) => !a.startsWith('--')) ?? 'http://localhost:4173/';
+// --pages serves web/dist under /ASCII-Converter/ on :4174, the way GitHub
+// Pages does, and fails if the page requests anything outside that path.
+const PAGES_BASE = '/ASCII-Converter/';
+const pagesMode = args.includes('--pages');
+const url =
+  args.find((a) => !a.startsWith('--')) ?? (pagesMode ? `http://localhost:4174${PAGES_BASE}` : 'http://localhost:4173/');
 // --readme also exports examples/spheres-ascii.png through the page, for the README.
 const writeReadmeImage = args.includes('--readme');
 const chromePath =
@@ -77,7 +85,28 @@ const shapes = [
 
 // Without an explicit URL, serve the built page (web/dist) ourselves.
 let preview;
-if (!args.some((a) => !a.startsWith('--'))) {
+/** Requests outside the Pages base path (--pages): these would 404 on GitHub Pages. */
+const outsideBase = [];
+if (pagesMode && !args.some((a) => !a.startsWith('--'))) {
+  const dist = fileURLToPath(new URL('../web/dist/', import.meta.url));
+  const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.gif': 'image/gif', '.woff2': 'font/woff2', '.woff': 'font/woff', '.txt': 'text/plain' };
+  const server = createServer((req, res) => {
+    const path = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+    if (!path.startsWith(PAGES_BASE)) {
+      if (path !== '/favicon.ico') outsideBase.push(path);
+      res.writeHead(404).end();
+      return;
+    }
+    const file = normalize(join(dist, path.slice(PAGES_BASE.length) || 'index.html'));
+    if (!file.startsWith(normalize(dist)) || !existsSync(file) || statSync(file).isDirectory()) {
+      res.writeHead(404).end();
+      return;
+    }
+    res.writeHead(200, { 'content-type': types[extname(file)] ?? 'application/octet-stream' }).end(readFileSync(file));
+  });
+  await new Promise((resolve, reject) => server.once('error', reject).listen(4174, resolve));
+  preview = { kill: () => server.close() };
+} else if (!args.some((a) => !a.startsWith('--'))) {
   const vite = new URL('../node_modules/vite/bin/vite.js', import.meta.url);
   preview = spawn(process.execPath, [fileURLToPath(vite), 'preview', '--port', '4173', '--strictPort'], {
     cwd: fileURLToPath(new URL('..', import.meta.url)),
@@ -449,6 +478,10 @@ try {
     bytes = await download('spheres.png');
     writeFileSync(new URL('../examples/spheres-ascii.png', import.meta.url), bytes);
     console.log(`wrote examples/spheres-ascii.png ${pngSize(bytes).join('x')}`);
+  }
+
+  if (pagesMode) {
+    check(`Served from ${PAGES_BASE}: nothing requested outside it`, outsideBase.length === 0, outsideBase);
   }
 
   console.log(`\nScreenshots in ${work}`);
