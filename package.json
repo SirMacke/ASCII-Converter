@@ -25,6 +25,13 @@
   "type": "module",
   "main": "./dist/core/index.js",
   "types": "./dist/core/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "node": [
+        "./dist/node/index.d.ts"
+      ]
+    }
+  },
   "bin": {
     "ascii-converter": "dist/cli/bin.js"
   },
@@ -59,6 +66,7 @@
     "preview:web": "vite preview",
     "examples": "node scripts/make-examples.mjs",
     "check:web": "vite build && node scripts/check-web.mjs",
+    "check:types": "node scripts/check-types.mjs",
     "prepack": "npm run build"
   },
   "dependencies": {
